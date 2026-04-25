@@ -34,6 +34,16 @@ U0 RunDaemon(U8 *data=NULL)
   // before re-init crashed the previous attempts in FifoU8Insert.
   CommInit8n1(1, 9600);
   CommInit8n1(2, 9600);
+
+  // CommInit8n1 sizes both RX/TX FIFOs at 256 bytes. QEMU's chardev
+  // socket does not rate-limit at the UART's nominal baud rate, so a
+  // big push from the host (e.g. test-fast bundling Assert.ZC + src/
+  // + tests/) bursts faster than the daemon can drain. Bytes overflow
+  // the 256-byte RX FIFO and silently drop. Replace COM2's RX with a
+  // 64KB power-of-two FIFO so pushes up to ~64KB land intact.
+  FifoU8Del(comm_ports[2].RX_fifo);
+  comm_ports[2].RX_fifo = FifoU8New(65536);
+
   CommPrint(1, "DAEMON_LISTEN:COM2\n");
 
   idx = 0;
