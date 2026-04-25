@@ -39,9 +39,14 @@ done
   echo 'CommPrint(1, "TEST_RUN_BEGIN\n");'
   echo ''
   echo '#include "E:/Assert.ZC";'
+  # T= filter: e.g. `make test T=Hello` only runs tests/T_Hello.ZC.
+  # Bare substring match so `T=math` matches T_Math.ZC, T_MathX.ZC, etc.
   for f in "$REPO"/tests/T_*.ZC; do
     [ -f "$f" ] || continue
     base=$(basename "$f")
+    if [ -n "${T:-}" ] && ! [[ "$base" == *"$T"* ]]; then
+      continue
+    fi
     echo "#include \"E:/$base\";"
   done
   echo ''

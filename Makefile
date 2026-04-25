@@ -1,4 +1,4 @@
-.PHONY: setup disk shuttle install boot boot-disk dev wire-makehome test clean clean-disk help
+.PHONY: setup disk shuttle install boot boot-disk dev wire-makehome test watch clean clean-disk help
 
 ZEALOS_URL := https://github.com/Zeal-Operating-System/ZealOS/releases/download/latest/ZealOS-PublicDomain-BIOS-2025-11-10-02_56_42.iso
 ISO        := vendor/zealos/zealos.iso
@@ -19,6 +19,8 @@ help:
 	@echo "make dev            boot installed disk + shuttle — main dev loop"
 	@echo "make wire-makehome  one-time: sendkey Setup.ZC to wire ~/MakeHome.ZC"
 	@echo "make test           build shuttle, boot dev, parse serial.log, exit 0/1"
+	@echo "make test T=Hello   only run tests whose filename contains 'Hello'"
+	@echo "make watch          re-run 'make test' on src/ or tests/ change (needs fswatch)"
 	@echo "make clean          remove build artifacts (keeps ISO and disk)"
 	@echo "make clean-disk     wipe the installed disk (forces a fresh install)"
 
@@ -36,7 +38,7 @@ $(DISK):
 	qemu-img create -f qcow2 $@ $(DISK_SIZE)
 
 shuttle:
-	bash scripts/build-shuttle.sh
+	T="$(T)" bash scripts/build-shuttle.sh
 
 install: $(ISO) $(DISK)
 	bash scripts/boot.sh install
@@ -61,6 +63,14 @@ test: $(DISK) shuttle
 	@echo "==> running tests (timeout $(TEST_TIMEOUT)s)"
 	@bash scripts/run-tests.sh
 	@bash scripts/check-tests.sh
+
+# Re-run the test loop on any change under src/ or tests/. Single shot per
+# event; if you save 5 files in 200ms, fswatch coalesces. macOS only;
+# `brew install fswatch` if missing.
+watch:
+	@command -v fswatch >/dev/null || { echo "error: fswatch not installed (brew install fswatch)"; exit 1; }
+	@echo "==> watching src/ tests/ — Ctrl-C to stop"
+	@fswatch -o src tests | xargs -n1 -I{} $(MAKE) test
 
 clean:
 	rm -rf build

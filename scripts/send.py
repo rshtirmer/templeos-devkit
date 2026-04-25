@@ -84,6 +84,12 @@ def send_lines(lines: list[str], delay: float) -> str:
             s.recv(8192)  # drain banner
         except socket.timeout:
             pass
+        # Throwaway "shift" sendkey first — the very first scancode after
+        # connecting to the monitor is intermittently dropped (banner-drain
+        # race). A modifier-only press is benign on the ZealOS side: it
+        # doesn't generate a typed character.
+        s.sendall(b"sendkey shift\n")
+        time.sleep(delay)
         # Send each sendkey command, with a short inter-key delay so the
         # guest scancode buffer doesn't drop keys. Don't block on recv
         # between sends — QEMU's monitor will echo prompts but we don't

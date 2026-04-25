@@ -9,8 +9,18 @@ LOG="$REPO/build/serial.log"
 [ -f "$LOG" ] || { echo "error: $LOG missing — did the run happen?" >&2; exit 1; }
 
 echo "==== test run summary ===="
-grep -E "^(TEST_RUN_BEGIN|TEST_RUN_END|TEST_SUMMARY|TEST_PASS|TEST_FAIL)" "$LOG" || true
+grep -E "^(TEST_RUN_BEGIN|TEST_RUN_END|TEST_SUMMARY|TEST_PASS|TEST_FAIL|TEST_PANIC)" "$LOG" || true
 echo "=========================="
+
+# Panic marker (compile error or HolyC exception during the run). The
+# watcher in run-tests.sh snaps build/screen.png before quitting — point
+# the user at it.
+if grep -q "^TEST_PANIC:" "$LOG"; then
+  panic=$(grep "^TEST_PANIC:" "$LOG" | head -1)
+  echo "PANIC during run — $panic"
+  [ -f "$REPO/build/screen.png" ] && echo "       see $REPO/build/screen.png"
+  exit 1
+fi
 
 if grep -q "^TEST_FAIL:" "$LOG"; then
   fails=$(grep -c "^TEST_FAIL:" "$LOG")
@@ -20,6 +30,7 @@ fi
 
 if ! grep -q "^TEST_RUN_END" "$LOG"; then
   echo "INCOMPLETE — run did not reach TEST_RUN_END (timeout or panic?)"
+  [ -f "$REPO/build/screen.png" ] && echo "       see $REPO/build/screen.png"
   exit 1
 fi
 

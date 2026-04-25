@@ -29,13 +29,23 @@ i=0
 while [ ! -S "$SOCK" ] && [ $i -lt 10 ]; do sleep 1; i=$((i+1)); done
 [ -S "$SOCK" ] || { echo "error: monitor socket never appeared"; kill $QEMU_PID 2>/dev/null; exit 1; }
 
-# Wait for the ZealOS Boot Loader menu (~10-15s on TCG), then send `1`.
-echo "==> waiting 12s for boot loader menu"
-sleep 12
-echo "==> sending '1' to pick Drive C"
-"$REPO/scripts/send.py" '1' --enter --delay 0.1 >/dev/null
+# Boot loader keystroke: TCG timing varies. Send `1\n` every 3s for the
+# first 30s — extras after Drive C is selected are harmless. The first
+# `sendkey` after monitor connect occasionally drops, but send.py now
+# leads with a throwaway `shift` to absorb that.
+(
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    if grep -q "^MAKEHOME_BEGIN\|^TEST_RUN_BEGIN" "$LOG" 2>/dev/null; then
+      exit 0  # already booted past the menu
+    fi
+    "$REPO/scripts/send.py" '1' --enter --delay 0.05 >/dev/null 2>&1 || true
+    sleep 3
+  done
+) &
+SELECTOR_PID=$!
 
-# Watcher: when TEST_RUN_END appears, quit qemu via monitor.
+# Watcher: when TEST_RUN_END or a known panic marker appears, quit qemu.
+# Also screenshot on timeout so failure mode is visible without re-running.
 (
   i=0
   while [ $i -lt "$TIMEOUT" ]; do
@@ -45,10 +55,18 @@ echo "==> sending '1' to pick Drive C"
       echo "quit" | nc -U "$SOCK" >/dev/null 2>&1 || true
       exit 0
     fi
+    if grep -qE "^TEST_PANIC:|Compiler\.ZC|Exception" "$LOG" 2>/dev/null; then
+      echo "==> panic/compile error detected, snapping screen and quitting"
+      bash "$REPO/scripts/screenshot.sh" >/dev/null 2>&1 || true
+      sleep 1
+      echo "quit" | nc -U "$SOCK" >/dev/null 2>&1 || true
+      exit 0
+    fi
     sleep 1
     i=$((i + 1))
   done
-  echo "==> watchdog timeout (${TIMEOUT}s), killing qemu"
+  echo "==> watchdog timeout (${TIMEOUT}s), snapping screen and killing qemu"
+  bash "$REPO/scripts/screenshot.sh" >/dev/null 2>&1 || true
   echo "quit" | nc -U "$SOCK" >/dev/null 2>&1 || true
   sleep 2
   kill -9 "$QEMU_PID" 2>/dev/null || true
@@ -57,4 +75,5 @@ WATCHER_PID=$!
 
 wait "$QEMU_PID" 2>/dev/null || true
 kill "$WATCHER_PID" 2>/dev/null || true
+kill "$SELECTOR_PID" 2>/dev/null || true
 exit 0
