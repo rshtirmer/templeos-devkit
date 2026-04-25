@@ -53,18 +53,30 @@ done
   echo 'TEST_SUMMARY;'
   echo 'CommPrint(1, "TEST_RUN_END\n");'
   echo ''
-  # DAEMON=1 wires the live REPL: load Daemon.ZC's function defs at boot
-  # phase, then queue RunDaemon for execution post-boot via Sys() so the
-  # body's types resolve outside the boot-phase parser. See NOTES.md.
+  # DAEMON=1 wires the live REPL. We must defer the daemon spawn to
+  # post-boot context, otherwise the boot-phase parser quirks (NOTES.md)
+  # apply when the queued source is parsed. The trick:
+  #
+  #   - Sys() can NOT be used directly: when called from sys_task during
+  #     boot, Sys() runs JobsHandler synchronously, parsing the queued
+  #     source IMMEDIATELY in boot phase — same quirks.
+  #   - TaskExe(..., flags=0) queues the job WITHOUT triggering
+  #     JobsHandler. The job sits in sys_task's wait queue until
+  #     post-boot, where it gets parsed normally.
+  #   - We must NOT terminate Boot.ZC with `while (TRUE) Sleep(...)`,
+  #     because that pins sys_task in the spinner and the queue never
+  #     drains. Letting Boot.ZC return naturally lets sys_task move on
+  #     and process the queue. (run-tests.sh quits via the monitor
+  #     socket when it sees TEST_RUN_END — no spinner needed.)
   if [ "${DAEMON:-0}" = "1" ]; then
     echo '// DAEMON=1: live REPL on COM2 (build/com2.sock).'
     echo '#include "E:/Daemon.ZC";'
-    echo 'Sys("RunDaemon;");'
+    echo 'TaskExe(sys_task, Fs, "Spawn(&RunDaemon, NULL, \"Daemon\");", 0);'
     echo ''
   fi
-  echo '// No ACPI shutdown here — host-side run-tests.sh sends `quit` via'
-  echo '// the QEMU monitor when it sees TEST_RUN_END. Spinning is enough.'
-  echo 'while (TRUE) Sleep(1000);'
+  echo '// Boot.ZC ends here. sys_task drains its queue post-boot. The'
+  echo '// host-side run-tests.sh quits qemu via the monitor socket when'
+  echo '// it sees TEST_RUN_END, so no spinner is needed here.'
 } > "$STAGE/Boot.ZC"
 
 # 3. Detach any leftover mount of the previous image.

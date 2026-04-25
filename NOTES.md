@@ -14,13 +14,66 @@ known ground.
   sends `quit` via `build/qemu.sock`.
 - `~30s` per cycle on Apple Silicon TCG (no x86 hardware accel).
 
-## Attempted but parked: live REPL ("zpush" daemon)
+## Live REPL ("zpush" daemon) — WORKING (`make repl`)
 
-Goal: persistent VM, push HolyC source over a channel, get output back —
-no per-test boot. Files left in tree for the next attempt:
+Persistent VM, push HolyC source over a Unix socket, observe results in
+serial.log. ~800ms round-trip vs ~30s cold boot.
 
-- `src/Daemon.ZC` — accept loop, FifoU8Remove off `comm_ports[N].RX_fifo`
-- `scripts/zpush.sh` — host-side `nc -U` wrapper
+Pieces:
+
+- `src/Daemon.ZC` — `RunDaemon(U8 *data)`. Re-inits COM1+COM2 in its own
+  task heap, polls `comm_ports[2].RX_fifo`, writes received bytes to
+  `C:/Tmp/Cmd.HC` on EOT (0x04), runs them via `ExeFile`.
+- `scripts/zpush.sh` — `nc -U build/com2.sock`, appends EOT.
+- `scripts/build-shuttle.sh` (DAEMON=1) — emits a Boot.ZC that
+  `#include`s Daemon.ZC at boot phase, then queues
+  `Spawn(&RunDaemon, NULL, "Daemon");` for sys_task post-boot via
+  `TaskExe(sys_task, Fs, "...", 0)` (see "Findings" below).
+- `scripts/boot.sh dev` — wires COM2 as a chardev socket
+  (`build/com2.sock`) in addition to COM1=file.
+
+### Findings (the path through three failure modes)
+
+**Mode 1: top-level `RunDaemon;` invocation.** Boot-phase parser quirks
+(documented further down) trip "Undefined identifier" on types inside
+function bodies invoked at top level. Function definitions parse fine;
+invocation is what crosses the boot-phase boundary.
+
+**Mode 2: `Sys("RunDaemon;")` from boot phase.** `Sys()`'s
+`Fs == sys_task` branch (which is true during MakeHome execution) calls
+`JobsHandler(RFlagsGet)` *synchronously*. JobsHandler runs the queued
+job by calling `ExePrint("%s", aux_str)` — which compiles and executes
+the source RIGHT NOW, in boot phase. Same parser quirks apply. Sys()
+does NOT actually defer to post-boot when invoked from sys_task.
+
+**Mode 3: `TaskExe(sys_task, Fs, "...", 0)` + spinner.** TaskExe with
+`flags=0` queues without triggering JobsHandler. Good. But Boot.ZC ended
+with `while (TRUE) Sleep(1000);` to "spin" sys_task. That pins sys_task
+in the spinner and the queue never drains. The job sits forever.
+
+**What works:** TaskExe with flags=0 to queue, then **let Boot.ZC
+return naturally** (no spinner). sys_task moves on through its normal
+post-MakeHome init, drains its queue, our `Spawn(&RunDaemon, ...)`
+runs, and the daemon comes up. `run-tests.sh` quits qemu via the
+monitor socket on `TEST_RUN_END` — no spinner needed for `make test`
+either.
+
+### Findings (FIFO heap ownership)
+
+`FifoU8New` (in `src/Kernel/KDataTypes.ZC`) allocates with
+`mem_task = Fs` — i.e. the calling task's heap. `CommInit8n1` calls
+this for both RX and TX fifos. So when Boot.ZC does
+`CommInit8n1(1, 9600)` from sys_task, `comm_ports[1].TX_fifo` lives in
+sys_task's heap.
+
+A spawned task that calls `CommPrint(1, ...)` then GP-faults in
+`FifoU8Insert` — the cross-task heap reference is unsafe (heap
+re-use, lock contention, or both — exact mechanism unverified).
+Workaround: re-call `CommInit8n1(1, 9600); CommInit8n1(2, 9600)` from
+inside the spawned task so both port FIFOs live in the spawned task's
+own heap.
+
+### Earlier dead-ends (kept for the record)
 
 ### Findings (HolyC boot-phase parser)
 

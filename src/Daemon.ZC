@@ -2,28 +2,38 @@
 // bytes, executes HolyC source on EOT (0x04), writes daemon-side trace
 // to COM1 (host's serial.log).
 //
-// IMPORTANT: this file is INCLUDED at boot phase (so the function body
-// parses), but RunDaemon must be invoked from a Sys()-queued context so
-// the body's types (CFifoU8 *, while-loop with locals) resolve without
-// the boot-phase parser quirks documented in NOTES.md. See Boot.ZC's
-// emit when DAEMON=1 — it does:
+// IMPORTANT: top level here is pure function-definition. The launch is
+// done from Boot.ZC via:
 //
-//     #include "E:/Daemon.ZC";
-//     Sys("RunDaemon;");
+//     Sys("Spawn(&RunDaemon, NULL, \"Daemon\");");
+//
+// Why Spawn instead of just Sys("RunDaemon;"):
+//   - Sys() blocks the calling task on JobResScan until the queued code
+//     returns. RunDaemon's `while (TRUE)` never returns, so a plain
+//     Sys() would deadlock Boot.ZC inside the spawn-wait.
+//   - Spawn() creates an independent task and returns immediately. The
+//     wrapping Sys() exists only to defer the Spawn call to sys_task
+//     post-boot context (so the boot-phase parser quirks documented in
+//     NOTES.md don't apply).
 //
 // QEMU dev-mode wires COM2 as a chardev socket (build/com2.sock); push
 // source with scripts/zpush.sh.
 
 #include "::/Doc/Comm";
-CommInit8n1(2, 9600);    // COM2 = input socket from host
-CommPrint(1, "DAEMON_FILE_LOADED\n");
 
-U0 RunDaemon()
+U0 RunDaemon(U8 *data=NULL)
 {
   U8 buf[65536];
   I64 idx;
   U8 b;
 
+  // Re-init COM1 and COM2 from this task. CommInit8n1 calls FifoU8New
+  // which allocates in mem_task=Fs (the calling task). The FIFOs that
+  // Boot.ZC allocated for COM1 live in sys_task's heap and are not
+  // safely usable from this spawned task — calling CommPrint(1, ...)
+  // before re-init crashed the previous attempts in FifoU8Insert.
+  CommInit8n1(1, 9600);
+  CommInit8n1(2, 9600);
   CommPrint(1, "DAEMON_LISTEN:COM2\n");
 
   idx = 0;
