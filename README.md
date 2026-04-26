@@ -132,15 +132,29 @@ untested before and is the path of least resistance.
 
 ## Editor support
 
-`tooling/holyc-vscode/` — VSCode extension. Syntax highlighting for
-`.ZC` / `.HC` / `.HH`. Install:
+Two local extensions, install via symlink — no marketplace, no plugin
+manager required.
 
 ```sh
+# VSCode
 ln -s "$(pwd)/tooling/holyc-vscode" ~/.vscode/extensions/local.holyc-0.1.0
+
+# Neovim (native package layout)
+mkdir -p ~/.config/nvim/pack/local/start
+ln -s "$(pwd)/tooling/holyc-nvim" ~/.config/nvim/pack/local/start/holyc
 ```
 
-Restart VSCode. See `tooling/holyc-vscode/README.md` for the full list
-of recognized types, keywords, and builtins.
+Both extensions cover the same surface: HolyC primitive types
+(`U0`/`U8`/…/`F64`/`Bool`), ZealOS class types (`C[A-Z]…`), control flow
+including sub-switch `start`/`end`, storage modifiers (`extern`,
+`public`, `interrupt`, `lastclass`, `lock`, …), DolDoc `$$` escape,
+multi-char literals, preprocessor directives, and the kernel/stdlib
+functions this repo uses. Diagnostics for the boot-phase quirks
+documented in `NOTES.md` are out of scope — for ground truth, push
+through `make repl` + `scripts/zpush.sh`.
+
+See `tooling/holyc-vscode/README.md` and `tooling/holyc-nvim/README.md`
+for details.
 
 ## Credits
 
