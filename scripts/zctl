@@ -1,0 +1,399 @@
+#!/usr/bin/env python3
+"""zctl — single-process control plane for the ZealOS dev VM.
+
+Replaces the two-terminal dance (make dev + make wire-makehome,
+make repl + scripts/zpush.sh, scripts/screenshot.sh, tail serial.log)
+with one synchronous CLI:
+
+    zctl up [--headless]           background VM + daemon, wait for DAEMON_LISTEN
+                                   (default shows QEMU window so you can watch)
+    zctl down                      graceful quit via monitor socket
+    zctl status                    is it running? at the prompt? listening?
+    zctl eval 'Print("hi\\n");'    send HolyC, block until DAEMON_DONE
+    zctl eval -f path/to.ZC        same, from a file
+    zctl shell                     interactive line-by-line REPL
+    zctl logs [-n N] [-f]          tail or last-N of build/serial.log
+    zctl screenshot [path]         snap via monitor socket
+    zctl wire                      one-shot: mount shuttle as E: + Setup.ZC
+
+Stdlib only. macOS-tested. Assumes scripts/ siblings (boot.sh,
+build-shuttle.sh) and the FAT shuttle are already buildable.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import select
+import shlex
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+BUILD = REPO / "build"
+LOG = BUILD / "serial.log"
+MON = BUILD / "qemu.sock"
+COM2 = BUILD / "com2.sock"
+PID = BUILD / "qemu.pid"
+
+DAEMON_READY = "DAEMON_LISTEN:COM2"
+DAEMON_DONE = "DAEMON_DONE"
+DAEMON_RECV = re.compile(r"DAEMON_RECV:(\d+)")
+SETUP_OK = "SETUP_OK"
+
+
+# ---------- monitor socket -------------------------------------------------
+
+def monitor_send(cmd: str, timeout: float = 2.0) -> str:
+    if not MON.exists():
+        return ""
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(str(MON))
+            s.sendall((cmd + "\n").encode())
+            time.sleep(0.1)
+            chunks = []
+            s.settimeout(0.5)
+            try:
+                while True:
+                    data = s.recv(8192)
+                    if not data:
+                        break
+                    chunks.append(data)
+            except socket.timeout:
+                pass
+            return b"".join(chunks).decode(errors="replace")
+    except (FileNotFoundError, ConnectionRefusedError, OSError):
+        return ""
+
+
+# ---------- log tail -------------------------------------------------------
+
+def log_size() -> int:
+    try:
+        return LOG.stat().st_size
+    except FileNotFoundError:
+        return 0
+
+
+def wait_for(pattern: str, *, since: int = 0, timeout: float = 60.0,
+             poll: float = 0.1) -> tuple[bool, str]:
+    """Tail serial.log from `since` byte offset, return (found, captured)."""
+    deadline = time.monotonic() + timeout
+    pos = since
+    captured = []
+    while time.monotonic() < deadline:
+        try:
+            with LOG.open("rb") as f:
+                f.seek(pos)
+                data = f.read()
+                pos = f.tell()
+        except FileNotFoundError:
+            time.sleep(poll)
+            continue
+        if data:
+            text = data.decode(errors="replace")
+            captured.append(text)
+            if pattern in "".join(captured):
+                return True, "".join(captured)
+        time.sleep(poll)
+    return False, "".join(captured)
+
+
+# ---------- pid / process --------------------------------------------------
+
+def read_pid() -> int | None:
+    try:
+        return int(PID.read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
+def alive(pid: int | None) -> bool:
+    if pid is None:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except (ProcessLookupError, PermissionError):
+        return False
+
+
+# ---------- subcommands ----------------------------------------------------
+
+def cmd_up(args) -> int:
+    if alive(read_pid()):
+        print(f"==> already up (pid {read_pid()})")
+        return 0
+
+    BUILD.mkdir(exist_ok=True)
+    LOG.write_text("")
+    for sock in (MON, COM2):
+        sock.unlink(missing_ok=True)
+
+    # Build shuttle with daemon enabled.
+    print("==> building shuttle (DAEMON=1)")
+    env = {**os.environ, "DAEMON": "1", "T": args.test_filter or ""}
+    rc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "build-shuttle.sh")],
+        env=env, cwd=REPO,
+    ).returncode
+    if rc != 0:
+        return rc
+
+    iso = REPO / "vendor" / "zealos" / "zealos.iso"
+    disk = REPO / "vendor" / "zealos" / "disk.qcow2"
+    shuttle = BUILD / "shuttle.img"
+    for path, what in [(iso, "ISO"), (disk, "disk"), (shuttle, "shuttle")]:
+        if not path.exists():
+            print(f"error: missing {what} ({path})", file=sys.stderr)
+            return 1
+
+    qemu_args = [
+        "qemu-system-x86_64",
+        "-machine", "q35",
+        "-rtc", "base=localtime",
+        "-m", "1G",
+        "-vga", "std",
+        "-serial", f"file:{LOG}",
+        "-monitor", f"unix:{MON},server,nowait",
+        "-device", "ahci,id=ahci",
+        "-boot", "c",
+        "-drive", f"id=cd,file={iso},if=none,format=raw,media=cdrom",
+        "-device", "ide-cd,bus=ahci.0,drive=cd",
+        "-drive", f"id=hd,file={disk},if=none,format=qcow2",
+        "-device", "ide-hd,bus=ahci.1,drive=hd",
+        "-drive", f"id=sh,file={shuttle},if=none,format=raw",
+        "-device", "ide-hd,bus=ahci.2,drive=sh",
+        "-chardev", f"socket,id=com2,path={COM2},server=on,wait=off",
+        "-serial", "chardev:com2",
+    ]
+    if args.headless:
+        qemu_args.extend(["-display", "none"])
+    else:
+        qemu_args.extend(["-display", "cocoa,zoom-to-fit=on,full-grab=off"])
+
+    print(f"==> launching qemu ({'headless' if args.headless else 'display'})")
+    proc = subprocess.Popen(
+        qemu_args, cwd=REPO,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+    PID.write_text(str(proc.pid))
+
+    # Wait either for daemon to come up (post-wire), or for COM2 socket to
+    # exist + boot to settle (pre-wire). Use a loose readiness rule.
+    print(f"==> waiting up to {args.timeout}s for daemon (DAEMON_LISTEN)")
+    found, _ = wait_for(DAEMON_READY, timeout=args.timeout)
+    if found:
+        print("==> ready (daemon listening on COM2)")
+        return 0
+
+    # Daemon didn't come up — likely because MakeHome.ZC isn't wired yet.
+    # Check the COM2 socket and the prompt anyway.
+    if COM2.exists():
+        print("==> qemu running, COM2 socket up, but no DAEMON_LISTEN.")
+        print("    likely cause: MakeHome.ZC not wired. Run 'zctl wire'.")
+        return 0
+    print("error: qemu came up but COM2 socket never appeared", file=sys.stderr)
+    return 1
+
+
+def cmd_down(args) -> int:
+    pid = read_pid()
+    if not alive(pid):
+        print("==> not running")
+        PID.unlink(missing_ok=True)
+        return 0
+    monitor_send("quit")
+    for _ in range(20):
+        if not alive(pid):
+            break
+        time.sleep(0.1)
+    if alive(pid):
+        print("==> graceful quit timed out, sending SIGTERM")
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        time.sleep(0.5)
+        if alive(pid):
+            os.kill(pid, signal.SIGKILL)
+    PID.unlink(missing_ok=True)
+    for sock in (MON, COM2):
+        sock.unlink(missing_ok=True)
+    print("==> down")
+    return 0
+
+
+def cmd_status(args) -> int:
+    pid = read_pid()
+    if not alive(pid):
+        print("state: down")
+        return 1
+    print(f"state: up (pid {pid})")
+    print(f"  monitor: {'ok' if MON.exists() else 'MISSING'}")
+    print(f"  com2:    {'ok' if COM2.exists() else 'MISSING'}")
+    daemon = DAEMON_READY in (LOG.read_text(errors="replace") if LOG.exists() else "")
+    print(f"  daemon:  {'listening' if daemon else 'not listening (run zctl wire?)'}")
+    return 0
+
+
+def _push_and_wait(payload: bytes, timeout: float) -> tuple[int, str]:
+    """Push bytes to COM2 with EOT, wait for DAEMON_DONE, return captured."""
+    if not COM2.exists():
+        print(f"error: {COM2} missing — is the VM up?", file=sys.stderr)
+        return 1, ""
+    since = log_size()
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+        s.connect(str(COM2))
+        s.sendall(payload)
+        s.sendall(b"\x04")
+    found, captured = wait_for(DAEMON_DONE, since=since, timeout=timeout)
+    if not found:
+        print(f"error: timeout after {timeout}s waiting for {DAEMON_DONE}",
+              file=sys.stderr)
+        sys.stderr.write(captured)
+        return 2, captured
+    sys.stdout.write(captured)
+    return 0, captured
+
+
+def cmd_eval(args) -> int:
+    if args.file:
+        payload = Path(args.file).read_bytes()
+    elif args.code:
+        payload = args.code.encode()
+    else:
+        payload = sys.stdin.buffer.read()
+    rc, _ = _push_and_wait(payload, args.timeout)
+    return rc
+
+
+def cmd_shell(args) -> int:
+    print("zctl shell — line-by-line HolyC. Ctrl-D to exit.")
+    while True:
+        try:
+            line = input("zealc> ")
+        except (EOFError, KeyboardInterrupt):
+            print()
+            return 0
+        if not line.strip():
+            continue
+        _push_and_wait(line.encode() + b"\n", timeout=args.timeout)
+
+
+def cmd_logs(args) -> int:
+    if not LOG.exists():
+        print("error: no serial.log yet", file=sys.stderr)
+        return 1
+    if args.follow:
+        proc = subprocess.Popen(["tail", "-f", str(LOG)])
+        try:
+            proc.wait()
+        except KeyboardInterrupt:
+            proc.terminate()
+        return 0
+    text = LOG.read_text(errors="replace").splitlines()
+    for line in text[-args.n:]:
+        print(line)
+    return 0
+
+
+def cmd_screenshot(args) -> int:
+    out = Path(args.path) if args.path else (BUILD / "screen.png")
+    rc = subprocess.run(
+        ["bash", str(REPO / "scripts" / "screenshot.sh")],
+        cwd=REPO, env={**os.environ},
+        stdout=subprocess.DEVNULL,
+    ).returncode
+    if rc == 0 and (BUILD / "screen.png") != out:
+        shutil.copy(BUILD / "screen.png", out)
+    print(out)
+    return rc
+
+
+def cmd_wire(args) -> int:
+    """One-shot setup: manually mount shuttle as E: and source Setup.ZC."""
+    if not COM2.exists():
+        # Pre-daemon mount. We can't use eval (no daemon yet) — sendkeys it.
+        print("==> COM2 missing; sending mount + Setup.ZC via monitor sendkey")
+        send_py = REPO / "scripts" / "send.py"
+        mount_cmd = (
+            "CBlkDev *bd; "
+            "bd = BlkDevNextFreeSlot('E', 2); "
+            "AHCIPortInit(bd, &blkdev.ahci_hba->ports[2], 2); "
+            "BlkDevAdd(bd, 1, 0, 1); "
+            "Sleep(2000);"
+        )
+        since = log_size()
+        subprocess.run([str(send_py), mount_cmd, "--enter", "--delay", "0.05"],
+                       cwd=REPO, check=True)
+        time.sleep(3)
+        subprocess.run([str(send_py), '#include "E:/Setup.ZC";',
+                        "--enter", "--delay", "0.05"],
+                       cwd=REPO, check=True)
+        found, captured = wait_for(SETUP_OK, since=since, timeout=15.0)
+        sys.stdout.write(captured)
+        return 0 if found else 2
+
+    # Post-daemon path: just eval the include.
+    print("==> daemon present; sourcing E:/Setup.ZC via daemon")
+    rc, _ = _push_and_wait(b'#include "E:/Setup.ZC";', timeout=15.0)
+    return rc
+
+
+def main(argv: list[str] | None = None) -> int:
+    p = argparse.ArgumentParser(prog="zctl", description=__doc__.split("\n")[0])
+    sub = p.add_subparsers(dest="cmd", required=True)
+
+    up = sub.add_parser("up", help="start VM, wait for daemon")
+    up.add_argument("--headless", action="store_true",
+                    help="no QEMU window (default: show display)")
+    up.add_argument("--timeout", type=float, default=60.0)
+    up.add_argument("--test-filter", default=None,
+                    help="filter tests in shuttle (T= equivalent)")
+    up.set_defaults(func=cmd_up)
+
+    dn = sub.add_parser("down", help="stop VM")
+    dn.set_defaults(func=cmd_down)
+
+    st = sub.add_parser("status", help="show VM state")
+    st.set_defaults(func=cmd_status)
+
+    ev = sub.add_parser("eval", help="send HolyC, wait for DAEMON_DONE")
+    g = ev.add_mutually_exclusive_group()
+    g.add_argument("-f", "--file", help="file to push")
+    g.add_argument("code", nargs="?", help="HolyC source string")
+    ev.add_argument("--timeout", type=float, default=30.0)
+    ev.set_defaults(func=cmd_eval)
+
+    sh = sub.add_parser("shell", help="interactive REPL")
+    sh.add_argument("--timeout", type=float, default=15.0)
+    sh.set_defaults(func=cmd_shell)
+
+    lg = sub.add_parser("logs", help="tail or print serial.log")
+    lg.add_argument("-n", type=int, default=40, help="last N lines (default 40)")
+    lg.add_argument("-f", "--follow", action="store_true")
+    lg.set_defaults(func=cmd_logs)
+
+    ss = sub.add_parser("screenshot", help="snap screen")
+    ss.add_argument("path", nargs="?", help="output path")
+    ss.set_defaults(func=cmd_screenshot)
+
+    wr = sub.add_parser("wire", help="mount shuttle + Setup.ZC")
+    wr.set_defaults(func=cmd_wire)
+
+    args = p.parse_args(argv)
+    return args.func(args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
