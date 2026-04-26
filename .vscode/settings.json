@@ -1,0 +1,7 @@
+{
+  "files.associations": {
+    "*.ZC": "holyc",
+    "*.HC": "holyc",
+    "*.HH": "holyc"
+  }
+}

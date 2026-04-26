@@ -29,7 +29,7 @@ Point your plugin manager at `tooling/holyc-nvim/` as a local plugin.
 For lazy.nvim:
 
 ```lua
-{ dir = "/path/to/electron-orbitals-demo/tooling/holyc-nvim", ft = "holyc" }
+{ dir = "/path/to/templeos-devkit/tooling/holyc-nvim", ft = "holyc" }
 ```
 
 ## What it highlights
