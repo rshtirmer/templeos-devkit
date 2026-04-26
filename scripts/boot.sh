@@ -34,6 +34,7 @@ ARGS=(
   -rtc base=localtime
   -m 1G
   -vga std
+  -display cocoa,zoom-to-fit=on,full-grab=off
   # COM1 = file backend (output capture, what `make test` greps).
   -serial "file:$LOG"
   -monitor "unix:$MON,server,nowait"
