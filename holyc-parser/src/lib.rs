@@ -9,6 +9,7 @@
 
 pub mod diag;
 pub mod lex;
+pub mod lint;
 pub mod preproc;
 pub mod parse;
 pub mod symbol;
