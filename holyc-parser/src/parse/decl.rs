@@ -586,14 +586,33 @@ fn parse_class_body(p: &mut Parser) -> Vec<VarDecl> {
     while !matches!(p.peek(), TokenKind::RBrace | TokenKind::Eof) {
         let mstart = p.current_pos();
         let modifiers = parse_modifiers(p);
-        let ty = match super::type_::parse_type_allow_named(p) {
-            Some(t) => t,
+        let (ty, embedded_name) = match super::type_::parse_type_allow_named_with_inline_name(p) {
+            Some(p) => p,
             None => {
                 // recover to ;
                 p.recover_to_semicolon();
                 continue;
             }
         };
+        // Function-pointer field with embedded name: synthesize a
+        // VarDecl directly, eat the trailing `;`, and continue.
+        if let Some(name) = embedded_name {
+            let array_dims = parse_array_dims(p);
+            let init = parse_initializer_opt(p);
+            out.push(VarDecl {
+                modifiers: modifiers.clone(),
+                ty: ty.clone(),
+                name,
+                array_dims,
+                init,
+                reg_name: None,
+                span: (mstart, p.current_pos()),
+            });
+            // Multi-decl after fn-pointer fields is not idiomatic;
+            // accept a trailing `;` and move on.
+            p.eat(&TokenKind::Semicolon);
+            continue;
+        }
         // Could be a member function: parse declarator(s).
         if let TokenKind::Ident(_n) = p.peek().clone() {
             let n = if let TokenKind::Ident(s) = p.bump().kind { s } else { String::new() };
