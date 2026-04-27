@@ -132,7 +132,8 @@ test-fast:
 # `make repl` + scripts/zpush.sh. Exits 1 on any error-level diagnostic;
 # warnings don't fail the build.
 lint:
-	@python3 scripts/holyc-lint.py src tests
+	@python3 scripts/holyc-lint.py src $$(find tests -name '*.HC' -o -name '*.ZC' -o -name '*.HH' | grep -v '^tests/lint/bad-')
+	@bash tests/lint/run.sh
 
 # Re-run the test loop on any change under src/ or tests/. Single shot per
 # event; if you save 5 files in 200ms, fswatch coalesces. macOS only;

@@ -361,6 +361,158 @@ def lint(path: str, src: str) -> list[Diag]:
                      "returns — if it's an infinite loop, use Spawn() "
                      "instead (see NOTES.md)", "sys-deadlock")
 
+    # --- parametrized #define ------------------------------------------
+    # HolyC's parametrized macros are unreliable when JIT-pushed: tokens
+    # may not substitute correctly across ExePutS chunks. Prefer an
+    # out-of-line function.
+    _PARAM_DEFINE_RE = re.compile(r"^(\s*)#define\s+\w+\s*\(")
+    for ln_idx, ln in enumerate(src.split("\n")):
+        m = _PARAM_DEFINE_RE.match(ln)
+        if m:
+            push("warning", ln_idx + 1, len(m.group(1)) + 1,
+                 "parametrized #define is unreliable in HolyC; prefer "
+                 "an out-of-line function",
+                 "parametrized-define")
+
+    # --- exponent-form float literals ----------------------------------
+    # HolyC's parser rejects `1e-9` style literals ("Missing )"). The
+    # tokenizer above happily eats them, so we just inspect number
+    # tokens. Hex literals like 0x1e9 are a different shape (start with
+    # 0x) and won't match.
+    _EXP_FLOAT_RE = re.compile(r"^\d+(\.\d+)?[eE][+-]?\d+$")
+    for t in tokens:
+        if t.kind != "number":
+            continue
+        if t.value.startswith("0x") or t.value.startswith("0X"):
+            continue
+        if _EXP_FLOAT_RE.match(t.value):
+            push("error", t.line, t.col,
+                 f"exponent-form float literal '{t.value}' not "
+                 "supported; use plain decimal e.g. 0.000000001",
+                 "exponent-float-literal")
+
+    # --- comma-separated typed decls / multi-array decls ---------------
+    # HolyC's PrsVarLst chokes on `F64 a, b;` and `F64 m[9], im[9];`.
+    # We only flag these at statement scope — function-parameter lists
+    # (inside parentheses) legitimately use commas. We track paren depth
+    # over the full token stream so we don't fire inside prototypes or
+    # call sites.
+    _COMMA_DECL_RE = re.compile(
+        r"\b(F64|F32|I0|I8|I16|I32|I64|U0|U8|U16|U32|U64|Bool)"
+        r"\s+\w+\s*,\s*\w+"
+    )
+    _MULTI_ARRAY_RE = re.compile(
+        r"\b(F64|F32|I0|I8|I16|I32|I64|U0|U8|U16|U32|U64|Bool)"
+        r"\s+\w+\s*\[\s*\d+\s*\]\s*,\s*\w+\s*\[\s*\d+\s*\]"
+    )
+    # Build a per-character paren-depth array over the raw source so we
+    # can tell whether a regex match starts inside a paren group
+    # (function params, prototypes, call args). Strings, char literals
+    # and comments don't count toward depth.
+    depth_at = [0] * (len(src) + 1)
+    masked_chars = list(src)
+    for t in tokens:
+        if t.kind in {"string", "char", "comment"}:
+            # locate the token offset by re-walking via line/col is
+            # awkward; instead clear those ranges below using a second
+            # pass. Skip here.
+            pass
+    # Walk source character-by-character, honoring string/char/comment
+    # to avoid counting parens inside them.
+    cur_depth = 0
+    j = 0
+    Nsrc = len(src)
+    in_line_comment = False
+    in_block_comment = False
+    in_string = False
+    string_quote = ""
+    while j < Nsrc:
+        depth_at[j] = cur_depth
+        ch = src[j]
+        nxt = src[j + 1] if j + 1 < Nsrc else ""
+        if in_line_comment:
+            if ch == "\n":
+                in_line_comment = False
+            j += 1
+            continue
+        if in_block_comment:
+            if ch == "*" and nxt == "/":
+                in_block_comment = False
+                depth_at[j + 1] = cur_depth
+                j += 2
+                continue
+            j += 1
+            continue
+        if in_string:
+            if ch == "\\" and j + 1 < Nsrc:
+                depth_at[j + 1] = cur_depth
+                j += 2
+                continue
+            if ch == string_quote:
+                in_string = False
+            elif ch == "\n":
+                in_string = False
+            j += 1
+            continue
+        if ch == "/" and nxt == "/":
+            in_line_comment = True
+            j += 2
+            continue
+        if ch == "/" and nxt == "*":
+            in_block_comment = True
+            j += 2
+            continue
+        if ch == '"' or ch == "'":
+            in_string = True
+            string_quote = ch
+            j += 1
+            continue
+        if ch == "(":
+            cur_depth += 1
+        elif ch == ")":
+            cur_depth = max(0, cur_depth - 1)
+        j += 1
+    depth_at[Nsrc] = cur_depth
+
+    # Map (line, col) of line-start to absolute offset.
+    line_offsets = [0]
+    for idx, ch in enumerate(src):
+        if ch == "\n":
+            line_offsets.append(idx + 1)
+
+    for ln_idx, ln in enumerate(src.split("\n")):
+        lineno = ln_idx + 1
+        base = line_offsets[ln_idx] if ln_idx < len(line_offsets) else 0
+        # strip line comments to avoid false positives
+        code_part = ln
+        cidx = code_part.find("//")
+        if cidx >= 0:
+            code_part = code_part[:cidx]
+        m = _MULTI_ARRAY_RE.search(code_part)
+        if m and depth_at[base + m.start()] == 0:
+            push("error", lineno, m.start() + 1,
+                 "multiple array declarations in one statement choke "
+                 "PrsVarLst; split each array decl onto its own line",
+                 "multi-array-decl")
+            continue
+        m = _COMMA_DECL_RE.search(code_part)
+        if m and depth_at[base + m.start()] == 0:
+            push("error", lineno, m.start() + 1,
+                 "comma-separated typed declarations are rejected by "
+                 "PrsVarLst; split into separate declarations: "
+                 "`F64 a; F64 b;`",
+                 "comma-decl-list")
+
+    # --- F32 references -------------------------------------------------
+    # HolyC has only F64. F32 in source is always a porting bug.
+    for t in tokens:
+        if t.kind in {"comment", "string", "char"}:
+            continue
+        if t.value == "F32" and (t.kind == "ident" or t.kind == "type"):
+            push("error", t.line, t.col,
+                 "HolyC has no F32 type — use F64",
+                 "f32-reference")
+
     # --- per-line lints ------------------------------------------------
     for ln_idx, ln in enumerate(src.split("\n")):
         if "\t" in ln:
