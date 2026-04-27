@@ -147,6 +147,29 @@ the daemon (`zctl eval`) — it executes against the live system without
 rebooting. Useful for poking at functions, probing ZealOS APIs, and
 verifying small fixes before committing them to the test battery.
 
+### COM1 compile-error capture
+
+The daemon (both `src/Daemon.ZC` for ZealOS and the inline `D2()` in
+`scripts/temple-run.py` for original TempleOS) wraps every `ExePutS` /
+`ExeFile` call with a `Fs->put_doc` redirect + `Fs->catch_except`
+sample. Per-chunk output on COM1 is now:
+
+  COMPILE_OK\n  D_DONE\n                     # success
+  COMPILE_ERR_BEGIN\n<lexer text>\n
+  COMPILE_ERR_END\nCOMPILE_FAIL\n  D_DONE\n   # compile failed
+
+`temple-run.py` watches its per-chunk wait window for `COMPILE_FAIL`
+and auto-runs `scripts/screenshot.sh`, saving the framebuffer to
+`build/fail-<label>-NN.png` (numbered to avoid stomping on retries).
+This means: you no longer need to OCR the screen to read a HolyC
+compile error — the lexer text lands in `build/serial-temple.log` and
+the screen is captured automatically.
+
+Background and the investigation that motivates the design are in
+`NOTES-A2.md`. Headline: `ExePutS` swallows the `'Compiler'` throw
+internally and sets `Fs->catch_except=TRUE`; lexer error strings route
+through `Fs->put_doc`, so capturing them is a doc-redirect away.
+
 ## When to add to vs read from this file
 
 - **Read:** at the start of any session in this repo, especially before
