@@ -374,16 +374,41 @@ def main():
     # — pass --order to override (comma-separated). We strip
     # `#include "E:/..."` lines from every file (those are ZealOS shuttle
     # paths) and rely on push order to satisfy dependencies.
+    # Discover source + test files. ZealOS uses `.ZC` (renamed
+    # HolyC); pure TempleOS uses `.HC`. We accept either to support
+    # projects that follow the TempleOS native convention. `.HH`
+    # (HolyC headers) are picked up too — they're forward-decls that
+    # need to compile before consumers.
+    src_globs = ("*.HC", "*.HH", "*.ZC")
     if args.order:
         src_files = [src_dir / n for n in args.order.split(",")
                      if n not in skip]
     else:
-        src_files = [f for f in sorted(src_dir.glob("*.ZC"))
-                     if f.name not in skip]
+        src_files = []
+        seen = set()
+        for pat in src_globs:
+            for f in sorted(src_dir.glob(pat)):
+                if f.name in skip or f.name in seen:
+                    continue
+                src_files.append(f)
+                seen.add(f.name)
+    # Locate Assert (test framework) — `.HC` preferred, `.ZC` fallback.
     if args.launch is None:
-        src_files.append(test_dir / "Assert.ZC")
-    test_files = [f for f in sorted(test_dir.glob("T_*.ZC"))
-                  if not args.filter or args.filter in f.name]
+        for cand in ("Assert.HC", "Assert.ZC"):
+            p = test_dir / cand
+            if p.exists():
+                src_files.append(p)
+                break
+    test_files = []
+    seen = set()
+    for pat in ("T_*.HC", "T_*.ZC"):
+        for f in sorted(test_dir.glob(pat)):
+            if f.name in seen:
+                continue
+            if args.filter and args.filter not in f.name:
+                continue
+            test_files.append(f)
+            seen.add(f.name)
 
     # Phase 1: source + (optionally) Assert. Each is JIT-compiled.
     print(f"==> phase 1: pushing {len(src_files)} source files")
