@@ -86,7 +86,29 @@ pub fn parse_type_allow_named(p: &mut Parser) -> Option<TypeRef> {
     parse_type_inner(p, /*allow_named=*/ true)
 }
 
+/// Like `parse_type_allow_named` but also returns any name that was
+/// embedded inside a function-pointer declarator (e.g. the `cb` in
+/// `U0 (*cb)(I64 x)`). Callers that put a name AFTER the type
+/// (variable / parameter / class-member positions) consult the
+/// embedded name first and only read a trailing ident if it's None.
+pub fn parse_type_allow_named_with_inline_name(p: &mut Parser) -> Option<(TypeRef, Option<String>)> {
+    let snap = p.diags.len();
+    let mut inline_name: Option<String> = None;
+    let ty = parse_type_inner_with_name(p, /*allow_named=*/ true, &mut inline_name)?;
+    let _ = snap;
+    Some((ty, inline_name))
+}
+
 fn parse_type_inner(p: &mut Parser, allow_named: bool) -> Option<TypeRef> {
+    let mut sink = None;
+    parse_type_inner_with_name(p, allow_named, &mut sink)
+}
+
+fn parse_type_inner_with_name(
+    p: &mut Parser,
+    allow_named: bool,
+    inline_name: &mut Option<String>,
+) -> Option<TypeRef> {
     let pos = p.current_pos();
     let base: TypeRef = match p.peek().clone() {
         TokenKind::Ident(s) => match lookup_keyword(&s) {
@@ -130,14 +152,14 @@ fn parse_type_inner(p: &mut Parser, allow_named: bool) -> Option<TypeRef> {
     let stars = consume_stars(p);
     bump_pointer_depth(&mut ty, stars);
 
-    // Function-pointer form: `Ret (*)(args)`. We detect a `(` after
-    // the base type, expect `*`s + `)`, then a `(` parameter list.
+    // Function-pointer form: `Ret (*name)(args)`. The optional embedded
+    // name (`name` in `U0 (*cb)(I64)`) is plumbed back to the caller so
+    // var/param/field positions can use it without expecting a trailing
+    // ident that's already been consumed.
     if matches!(p.peek(), TokenKind::LParen) {
-        if let Some(fnref) = try_parse_function_pointer(p, ty.clone()) {
+        if let Some(fnref) = try_parse_function_pointer(p, ty.clone(), inline_name) {
             return Some(fnref);
         }
-        // Not a function-pointer pattern — leave the `(` alone for the
-        // declarator/array parser to handle.
     }
     Some(ty)
 }
@@ -167,9 +189,15 @@ fn bump_pointer_depth(ty: &mut TypeRef, n: u32) {
     }
 }
 
-/// Try to parse `(*...) (args)`. The cursor is at the `(`. Returns
-/// `None` and rewinds if the pattern doesn't match.
-fn try_parse_function_pointer(p: &mut Parser, ret: TypeRef) -> Option<TypeRef> {
+/// Try to parse `(*name)(args)`. The cursor is at the `(`. Returns
+/// `None` and rewinds if the pattern doesn't match. If a name appears
+/// in the `(*name)` slot it's stored in `inline_name` so the caller
+/// (var / param / field decl) can use it as the declarator.
+fn try_parse_function_pointer(
+    p: &mut Parser,
+    ret: TypeRef,
+    inline_name: &mut Option<String>,
+) -> Option<TypeRef> {
     let cp = p.checkpoint();
     if !p.eat(&TokenKind::LParen) { return None; }
     if !matches!(p.peek(), TokenKind::Star) {
@@ -179,10 +207,12 @@ fn try_parse_function_pointer(p: &mut Parser, ret: TypeRef) -> Option<TypeRef> {
         return None;
     }
     let stars = consume_stars(p);
-    // Optional name in `(*name)` form is not stored on the type; the
-    // declarator parser handles names. Accept and ignore an ident here.
-    if let TokenKind::Ident(_) = p.peek() {
-        p.bump();
+    // Optional name in `(*name)` form: capture it for the caller.
+    if let TokenKind::Ident(s) = p.peek().clone() {
+        if lookup_keyword(&s).is_none() {
+            *inline_name = Some(s);
+            p.bump();
+        }
     }
     if !p.eat(&TokenKind::RParen) {
         p.error_at(p.current_pos(), "expecting-rparen", "Missing ')' at ");
@@ -223,25 +253,29 @@ pub fn parse_param_list(p: &mut Parser) -> Vec<Param> {
             });
             break;
         }
-        // Parse type (allow named class).
-        let ty = match parse_type_allow_named(p) {
-            Some(t) => t,
+        // Parse type (allow named class). The type parser may consume
+        // an embedded name from a function-pointer declarator
+        // `(*cb)` — if so, that's our parameter name.
+        let (ty, embedded) = match parse_type_allow_named_with_inline_name(p) {
+            Some(p) => p,
             None => break,
         };
-        let mut name: Option<String> = None;
-        let name_pos = p.current_pos();
-        let next_ident: Option<String> = if let TokenKind::Ident(s) = p.peek() {
-            if lookup_keyword(s).is_none() { Some(s.clone()) } else { None }
-        } else {
-            None
-        };
-        if let Some(s) = next_ident {
-            if is_reserved_name(&s) {
-                p.error_at(name_pos, "reserved-name-collision",
-                    format_reserved_message(&s));
+        let mut name: Option<String> = embedded;
+        if name.is_none() {
+            let name_pos = p.current_pos();
+            let next_ident: Option<String> = if let TokenKind::Ident(s) = p.peek() {
+                if lookup_keyword(s).is_none() { Some(s.clone()) } else { None }
+            } else {
+                None
+            };
+            if let Some(s) = next_ident {
+                if is_reserved_name(&s) {
+                    p.error_at(name_pos, "reserved-name-collision",
+                        format_reserved_message(&s));
+                }
+                name = Some(s);
+                p.bump();
             }
-            name = Some(s);
-            p.bump();
         }
         // Optional default-arg (= expr) — call into expr parser. We
         // accept None gracefully (ExprCoder may not be ready).

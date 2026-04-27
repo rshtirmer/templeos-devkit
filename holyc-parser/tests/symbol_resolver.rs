@@ -126,6 +126,42 @@ U0 Use() {
 }
 
 #[test]
+fn function_pointer_field_in_class() {
+    // `U0 (*function)();` is a fn-pointer field. The parser used to
+    // consume `function` inside the type and then expect another
+    // ident to follow — yielding a false-positive
+    // "expecting-identifier". Now the inline name is plumbed through.
+    let errors = errors_for_files(&[
+        ("a.HC", r#"
+class cmd_function_t {
+  cmd_function_t *next;
+  U8 *name;
+  U0 (*function)();
+};
+U0 Use(cmd_function_t *c) {
+  c->name = NULL;
+}
+"#),
+    ]);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+#[test]
+fn function_pointer_parameter() {
+    // `U0 (*fn)()` as a parameter — same fix path. The inline name
+    // becomes the parameter name and is visible inside the body.
+    let errors = errors_for_files(&[
+        ("a.HC", r#"
+U0 RegisterCallback(U8 *name, U0 (*fn)()) {
+  fn();
+  Print("%s\n", name);
+}
+"#),
+    ]);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+#[test]
 fn define_macro_name_visible() {
     // `#define X 0xFFFF` — the name X must be treated as known
     // wherever it's referenced.
