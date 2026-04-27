@@ -2,18 +2,18 @@
 //! then validates every identifier-in-expression against the
 //! registered set + the kernel built-ins manifest.
 //!
-//! Multi-file mode: pass several `Module`s (paired with their file
-//! labels). All declarations across all modules are unioned before
-//! any uses are checked. This matches `temple-run.py`'s push order:
-//! every `src/*.HC` is JIT-compiled before any test runs, so a use
-//! in `Cvar.HC` of `Q_strcmp` defined in `Bootstrap.HC` resolves at
-//! the point the test pushes — but only because `Bootstrap.HC`
-//! sorts first and was pushed first.
+//! Multi-file mode (now): callers register-then-check per file in
+//! input order. Each file only sees decls from itself + earlier files
+//! (plus locals + the built-in manifest). This matches
+//! `temple-run.py`'s push semantics: every `src/*.HC` is JIT-compiled
+//! in alphabetical order, so a use in `Cmd.HC` of `Cvar_FindVar`
+//! (defined in `Cvar.HC`, which sorts AFTER `Cmd.HC`) is genuinely
+//! unresolved at push time — and we now report it.
 //!
-//! TODO (next pass): respect alphabetical push order so a forward
-//! reference INSIDE a single source file is fine but a use in
-//! `Cvar.HC` of a symbol declared in `Cvar2.HC` errors. The cheap
-//! version (this file) treats all decls as visible everywhere.
+//! Forward references INSIDE a single file are fine: register_module
+//! is called once for the whole file before check_module runs, so
+//! function bodies can reference any decl in the same file regardless
+//! of source order.
 
 use std::collections::HashMap;
 

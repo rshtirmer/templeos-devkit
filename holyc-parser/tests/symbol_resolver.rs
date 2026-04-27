@@ -7,17 +7,14 @@ use holyc_parser::symbol::Resolver;
 fn errors_for_files(pairs: &[(&str, &str)]) -> Vec<String> {
     let cfg = ParseConfig::default();
     let mut resolver = Resolver::new();
-    let mut modules = Vec::new();
+    let mut out = Vec::new();
+    // Mirror the CLI: register-then-check per file in input order.
+    // Each file only sees decls from itself + earlier files + builtins.
     for (file, src) in pairs {
         let (m, _diags) = parse_module(*file, src, cfg);
-        modules.push((file.to_string(), m));
-    }
-    for (label, m) in &modules {
-        resolver.register_module(label, m);
-    }
-    let mut out = Vec::new();
-    for (label, m) in &modules {
-        for d in resolver.check_module(label, m) {
+        let label = file.to_string();
+        resolver.register_module(&label, &m);
+        for d in resolver.check_module(&label, &m) {
             if matches!(d.severity, Severity::Error) {
                 out.push(format!("{}:{}:{}: {} [{}]", d.file, d.line, d.col, d.message, d.rule));
             }
@@ -140,6 +137,34 @@ U0 Foo() {
   Print("%d\n", x);
 }
 "#),
+    ]);
+    assert!(errors.is_empty(), "got {errors:?}");
+}
+
+#[test]
+fn forward_cross_file_use_flagged_as_unresolved() {
+    // Push-order: file1 (alphabetically first) uses a symbol from
+    // file2 (alphabetically second). The VM JIT-compiles file1
+    // before file2 is loaded, so the use fails — the resolver must
+    // mirror that order, not silently merge all decls first.
+    let errors = errors_for_files(&[
+        // 'C' < 'V' alphabetically — Cmd is "pushed" before Cvar.
+        ("Cmd.HC",  "U0 RegCmd() { Cvar_VarStr(\"foo\"); }"),
+        ("Cvar.HC", "U8 *Cvar_VarStr(U8 *name) { return name; }"),
+    ]);
+    assert!(
+        errors.iter().any(|e| e.contains("`Cvar_VarStr`")),
+        "expected unresolved Cvar_VarStr at the use site; got {errors:?}"
+    );
+}
+
+#[test]
+fn backward_cross_file_use_resolves_normally() {
+    // Reverse the order: now the consumer comes second. Should
+    // resolve cleanly because the dep was registered first.
+    let errors = errors_for_files(&[
+        ("Cvar.HC", "U8 *Cvar_VarStr(U8 *name) { return name; }"),
+        ("Cmd.HC",  "U0 RegCmd() { Cvar_VarStr(\"foo\"); }"),
     ]);
     assert!(errors.is_empty(), "got {errors:?}");
 }
