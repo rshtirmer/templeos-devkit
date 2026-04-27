@@ -18,6 +18,28 @@ use crate::parse::parser::Parser;
 
 const PTR_STARS_NUM: u32 = 4;
 
+/// TempleOS compile-time constants / globals that resolve to a value
+/// during PrsType. Used as parameter or local names, they get
+/// resolved to the constant before the slot is allocated, which
+/// trips the parser. See the `reserved-name-collision` rule.
+const RESERVED_DECL_NAMES: &[&str] = &[
+    "eps", "pi", "inf", "nan",   // F64 constants
+    "tS",                          // ZealOS seconds-since-boot global
+    "ms",                          // mouse global
+];
+
+pub fn is_reserved_name(name: &str) -> bool {
+    RESERVED_DECL_NAMES.contains(&name)
+}
+
+pub fn format_reserved_message(name: &str) -> String {
+    format!(
+        "`{name}` is a TempleOS reserved compile-time constant; using it \
+         as a parameter / local name causes PrsType to resolve it to the \
+         constant value and trip 'Expecting *'. Rename to `tol`/`epsilon`/etc."
+    )
+}
+
 /// Returns `Some(prim)` if `kw` is a primitive type keyword.
 fn keyword_to_prim(kw: Keyword) -> Option<PrimType> {
     Some(match kw {
@@ -79,6 +101,16 @@ fn parse_type_inner(p: &mut Parser, allow_named: bool) -> Option<TypeRef> {
                 }
             },
             None => {
+                // `F32` is a porting hazard — HolyC has only F64. Flag
+                // explicitly so the message names the fix instead of
+                // letting it slip through as a bogus class type.
+                if s == "F32" {
+                    p.error_at(
+                        pos,
+                        "f32-reference",
+                        "HolyC has no F32 type — use F64",
+                    );
+                }
                 if allow_named {
                     p.bump();
                     TypeRef::Named { name: s, pointer_depth: 0 }
@@ -197,12 +229,19 @@ pub fn parse_param_list(p: &mut Parser) -> Vec<Param> {
             None => break,
         };
         let mut name: Option<String> = None;
-        if let TokenKind::Ident(s) = p.peek() {
-            // skip if it's a keyword-flagged token
-            if lookup_keyword(s).is_none() {
-                name = Some(s.clone());
-                p.bump();
+        let name_pos = p.current_pos();
+        let next_ident: Option<String> = if let TokenKind::Ident(s) = p.peek() {
+            if lookup_keyword(s).is_none() { Some(s.clone()) } else { None }
+        } else {
+            None
+        };
+        if let Some(s) = next_ident {
+            if is_reserved_name(&s) {
+                p.error_at(name_pos, "reserved-name-collision",
+                    format_reserved_message(&s));
             }
+            name = Some(s);
+            p.bump();
         }
         // Optional default-arg (= expr) — call into expr parser. We
         // accept None gracefully (ExprCoder may not be ready).
