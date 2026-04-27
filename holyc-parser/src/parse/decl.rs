@@ -666,7 +666,14 @@ pub fn parse_local_decl(p: &mut Parser) -> Option<Vec<VarDecl>> {
     loop {
         let dstart = p.current_pos();
         let name = match p.peek().clone() {
-            TokenKind::Ident(s) if lookup_keyword(&s).is_none() => { p.bump(); s }
+            TokenKind::Ident(s) if lookup_keyword(&s).is_none() => {
+                if super::type_::is_reserved_name(&s) {
+                    p.error_at(dstart, "reserved-name-collision",
+                        super::type_::format_reserved_message(&s));
+                }
+                p.bump();
+                s
+            }
             _ => {
                 p.error_at(p.current_pos(), "expecting-ident", "Expecting identifier at ");
                 return None;

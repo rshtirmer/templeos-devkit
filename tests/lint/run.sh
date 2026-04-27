@@ -13,12 +13,14 @@ cd "$(dirname "$0")/../.."
 LINT="scripts/holyc-lint.py"
 RULES=(
   parametrized-define
-  exponent-float-literal
-  comma-decl-list
-  multi-array-decl
-  f32-reference
-  reserved-name-collision
 )
+# Other named-semantic rules (boot-phase-*, exponent-float-literal,
+# comma-decl-list, multi-array-decl, f32-reference, reserved-name-
+# collision) live in the Rust parser (`holycc lint`) as of the
+# lint/parser specialization. The Python lint owns formatting, lex-
+# level errors, and cheap heuristics; the parser owns everything
+# AST-aware. See `holyc-parser/tests/symbol_resolver.rs` for the
+# parser-side regression coverage.
 
 fail=0
 
