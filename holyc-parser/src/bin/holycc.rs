@@ -77,13 +77,16 @@ fn cmd_lint(args: &[String]) -> ExitCode {
         modules.push((label, m));
     }
 
-    // Phase 2 (optional): symbol resolution across all parsed modules.
+    // Phase 2 (optional): symbol resolution. Register-then-check per
+    // file in input order. This matches `temple-run.py`'s push semantics:
+    // each `*.HC` file is JIT-compiled in alphabetical order, so a use
+    // in file N can only see decls from files 1..=N (plus locals + the
+    // builtin manifest). Catches cross-file ordering bugs that the
+    // earlier "register-all-then-check-all" pass missed.
     if do_resolve {
         let mut resolver = Resolver::new();
         for (label, m) in &modules {
             resolver.register_module(label, m);
-        }
-        for (label, m) in &modules {
             all_diags.extend(resolver.check_module(label, m));
         }
     }
