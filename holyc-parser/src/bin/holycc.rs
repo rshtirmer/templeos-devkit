@@ -91,6 +91,12 @@ fn cmd_lint(args: &[String]) -> ExitCode {
         }
     }
 
+    // Phase 3: AST-level lint rules (independent of resolution; cheap
+    // to always run). Currently: switch-case-shared-scope, f64-bitwise.
+    for (label, m) in &modules {
+        all_diags.extend(holyc_parser::lint::lint_module(label, m));
+    }
+
     let mut total_errors = 0usize;
     let mut total_warnings = 0usize;
     for d in &all_diags {
