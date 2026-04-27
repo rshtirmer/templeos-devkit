@@ -745,55 +745,10 @@ fn looks_like_type(p: &Parser) -> bool {
     false
 }
 
-/// Parse the minimal type form: PRIM_OR_NAMED ('*' | '**' | ...). Used
-/// only inside expression-level constructs (`sizeof`, casts).
+/// Delegate to the full type parser now that StmtDeclCoder has shipped
+/// `type_::parse_type_allow_named`. Caller has already gated this
+/// with `looks_like_type`, so accepting a bare ident as a class is
+/// safe (parse-spec §4.2 allow_named path).
 fn parse_simple_type(p: &mut Parser) -> Option<TypeRef> {
-    let prim = match p.peek().clone() {
-        TokenKind::Ident(s) => match lookup_keyword(&s) {
-            Some(Keyword::U0) => Some((PrimType::U0, s)),
-            Some(Keyword::I0) => Some((PrimType::I0, s)),
-            Some(Keyword::U8) => Some((PrimType::U8, s)),
-            Some(Keyword::I8) => Some((PrimType::I8, s)),
-            Some(Keyword::Bool) => Some((PrimType::Bool, s)),
-            Some(Keyword::U16) => Some((PrimType::U16, s)),
-            Some(Keyword::I16) => Some((PrimType::I16, s)),
-            Some(Keyword::U32) => Some((PrimType::U32, s)),
-            Some(Keyword::I32) => Some((PrimType::I32, s)),
-            Some(Keyword::U64) => Some((PrimType::U64, s)),
-            Some(Keyword::I64) => Some((PrimType::I64, s)),
-            Some(Keyword::F64) => Some((PrimType::F64, s)),
-            _ => None,
-        },
-        _ => None,
-    };
-
-    let ty = if let Some((pty, _)) = prim {
-        p.bump();
-        let mut depth = 0u32;
-        while matches!(p.peek(), TokenKind::Star) {
-            p.bump();
-            depth += 1;
-        }
-        TypeRef::Prim {
-            ty: pty,
-            pointer_depth: depth,
-        }
-    } else if let TokenKind::Ident(name) = p.peek().clone() {
-        // User-defined type — caller has already gated this with
-        // `looks_like_type` so we accept and consume.
-        p.bump();
-        let mut depth = 0u32;
-        while matches!(p.peek(), TokenKind::Star) {
-            p.bump();
-            depth += 1;
-        }
-        TypeRef::Named {
-            name,
-            pointer_depth: depth,
-        }
-    } else {
-        return None;
-    };
-
-    Some(ty)
+    crate::parse::type_::parse_type_allow_named(p)
 }

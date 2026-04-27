@@ -115,7 +115,7 @@ fn global_multi_decl_allowed_with_flag() {
 }
 
 #[test]
-#[ignore = "needs ExprCoder: array dim `[9]` consumes through `;` under expr-stub"]
+// un-ignored after expr+type integration
 fn global_multi_array_decl_errors_too() {
     let (_m, rules) = parse_top("F64 m[9], im[9];");
     assert!(rules.iter().any(|r| r == "compiler-multi-decl-global"));
@@ -430,7 +430,7 @@ fn empty_top_item() {
 // -------- ensure aggregate init parses without panic --------
 
 #[test]
-#[ignore = "needs ExprCoder: array dim `[3]` consumes through `;` under expr-stub"]
+// un-ignored after expr+type integration
 fn aggregate_init_smoke() {
     // Initializer parsing routes into expression parser per element.
     // With the stub this will produce IntLit(0) placeholders, but the
