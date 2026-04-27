@@ -166,6 +166,89 @@ U0 F() {
 }
 
 #[test]
+fn f64_bitwise_clean_on_int_typed_locals() {
+    // The exact pattern that surfaced in real porting work:
+    // I64 locals fed into a bitwise op. Without type tracking this
+    // would false-positive; the type-aware lookup must silence it.
+    let r = warnings_only(r#"
+U0 F() {
+  I64 a = 15;
+  I64 b = 5;
+  I64 c = a & b;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on I64 locals: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_int_typed_params() {
+    let r = warnings_only(r#"
+U0 F(I64 lo, I64 hi) {
+  I64 packed = lo | hi;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on I64 params: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_int_returning_call() {
+    // Calls to a function that returns an integer type should not
+    // trigger the warning — the type context records each function's
+    // declared return type.
+    let r = warnings_only(r#"
+I64 GetBits() {
+  return 42;
+}
+U0 F() {
+  I64 x = GetBits() & GetBits();
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on int-returning calls: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_still_flags_on_f64_typed_locals() {
+    // Negative case — must keep firing on the actual bug pattern.
+    let r = warnings_only(r#"
+U0 F() {
+  F64 a = 3.0;
+  F64 b = 5.0;
+  F64 c = a & b;
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "f64-bitwise"),
+        "should flag F64-typed bitwise: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_define_int_const() {
+    // `#define X 0xFFFF` — body parses as integer literal, so the
+    // type context records the name as I64-typed.
+    let r = warnings_only(r#"
+#define MAX_VAL 0xFFFF
+U0 F() {
+  I64 x = 5;
+  I64 y = x & MAX_VAL;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on int-typed #define: {r:?}"
+    );
+}
+
+#[test]
 fn f64_bitwise_or_also_flagged() {
     let r = warnings_only(r#"
 U0 F() {
