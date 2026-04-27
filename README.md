@@ -141,6 +141,17 @@ or `#include`. Top-level `PASS` / `ASSERT_EQ` calls in test files
 execute during the push; output streams back over COM1 and lands in
 `build/serial-temple.log`.
 
+The bootstrap is two-stage. Stage-1 is the typed-via-sendkey minimal
+`D()` loop (~220 chars — fits the REPL's per-line parser limit).
+Stage-2 (`_DRun` + `D2`) is then pushed over COM2 (no parser limit
+when going through `ExePutS`) and adds **HolyC compile-error capture
+over COM1**: each pushed chunk emits `COMPILE_OK` or
+`COMPILE_ERR_BEGIN <text> COMPILE_ERR_END COMPILE_FAIL`, ending with
+`D_DONE`. On `COMPILE_FAIL` the host snaps a numbered framebuffer
+screenshot to `build/fail-<label>-NN.png`. No more OCRing TempleOS's
+display to read parser errors. See `NOTES-A2.md` for the rationale and
+`CLAUDE.md` for the protocol.
+
 The dev loop differs from ZealOS in three load-bearing ways:
 
 1. **Machine: `pc` not `q35`.** Terry's 2017 distro has no AHCI driver.

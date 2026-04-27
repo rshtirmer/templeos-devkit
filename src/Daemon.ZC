@@ -64,7 +64,33 @@ U0 RunDaemon(U8 *data=NULL)
           buf[idx] = 0;
           CommPrint(1, "DAEMON_RECV:%d\n", idx);
           FileWrite("C:/Tmp/Cmd.HC", buf, idx);
+          // ExeFile path mirrors ExePutS for our purposes — it goes
+          // through the same JIT and surfaces 'Compiler' throws via
+          // Fs->catch_except. We redirect Fs->put_doc to capture the
+          // PrintErr/lexer error text for streaming back over COM1.
+          // See NOTES-A2.md for the investigation.
+          CDoc *_save = Fs->put_doc;
+          CDoc *_cap  = DocNew;
+          Fs->put_doc = _cap;
+          Fs->catch_except = FALSE;
           ExeFile("C:/Tmp/Cmd.HC");
+          Bool _ok = !Fs->catch_except;
+          Fs->put_doc = _save;
+          if (_ok) {
+            CommPrint(1, "COMPILE_OK\n");
+          } else {
+            CommPrint(1, "COMPILE_ERR_BEGIN\n");
+            CDocEntry *e = _cap->head.next;
+            while (e != &_cap->head) {
+              if (e->type_u8 == DOCT_TEXT && e->tag)
+                CommPrint(1, "%s", e->tag);
+              else if (e->type_u8 == DOCT_NEW_LINE)
+                CommPrint(1, "\n");
+              e = e->next;
+            }
+            CommPrint(1, "\nCOMPILE_ERR_END\nCOMPILE_FAIL\n");
+          }
+          DocDel(_cap);
         }
         CommPrint(1, "DAEMON_DONE\n");
         idx = 0;

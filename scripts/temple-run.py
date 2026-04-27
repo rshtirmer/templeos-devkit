@@ -62,14 +62,12 @@ BOOTSTRAP_CMDS = [
     'CommInit8n1(2,115200);CommInit8n1(1,115200);'
     'FifoU8Del(comm_ports[2].RX_fifo);'
     'comm_ports[2].RX_fifo=FifoU8New(131072);',
-    # Receive function — runs in adam_task directly (no Spawn). Why not
-    # Spawn: spawned tasks' JIT compile context doesn't reliably resolve
-    # adam's ExePutS'd symbols via the hash_table->next chain. Running
-    # in adam means we own adam's window when D() exits.
-    #
-    # Uses ExePutS — JIT-compiles the buffer in memory, no disk write/
-    # read. FileWrite+ExeFile (earlier approach) churned the RedSea FS
-    # hard enough to panic Adam after ~10 chunks.
+    # Stage-1 D() — minimal receive loop. Uses plain ExePutS, errors
+    # still go to the framebuffer. We need this stage so the host can
+    # push the (much longer) stage-2 daemon body over COM2 — the typed
+    # REPL has a per-line buffer of ~256 chars, but ExePutS via COM2
+    # has no such limit. After D_OK we upgrade to D2(), which adds
+    # COM1 error capture.
     #
     # NOTE: original TempleOS uses FifoU8Rem (ZealOS renamed it).
     'U0 D(){'
@@ -83,6 +81,69 @@ BOOTSTRAP_CMDS = [
     # sets _D_exit=TRUE.
     'D();',
 ]
+
+
+# Stage-2 daemon body: defines _DRun (ExePutS wrapped with put_doc
+# redirect + Fs->catch_except sampling) and D2 (the upgraded receive
+# loop that calls _DRun and emits COMPILE_OK / COMPILE_ERR_BEGIN ...
+# COMPILE_ERR_END / COMPILE_FAIL sentinels per chunk).
+#
+# Pushed over COM2 once stage-1 D() is alive. Then we push
+# `_D_exit=TRUE;` to break stage-1, and sendkey `D2();` to start
+# stage-2 in adam_task.
+#
+# Why this is split from BOOTSTRAP_CMDS: the REPL's per-line parser
+# limit is ~256 chars. _DRun's body is ~440 chars. We sidestep by
+# letting stage-1 ExePutS the whole multi-statement program at once.
+#
+# See NOTES-A2.md for the investigation that motivates this design.
+DAEMON_V2_SOURCE = r"""
+U0 _DRun(U8 *b)
+{
+  CDoc *_s = Fs->put_doc;
+  CDoc *_c = DocNew;
+  Fs->put_doc = _c;
+  Fs->catch_except = FALSE;
+  ExePutS(b);
+  Bool _ok = !Fs->catch_except;
+  Fs->put_doc = _s;
+  if (_ok) {
+    CommPrint(1, "COMPILE_OK\n");
+  } else {
+    CommPrint(1, "COMPILE_ERR_BEGIN\n");
+    CDocEntry *e = _c->head.next;
+    while (e != &_c->head) {
+      if (e->type_u8 == DOCT_TEXT && e->tag)
+        CommPrint(1, "%s", e->tag);
+      else if (e->type_u8 == DOCT_NEW_LINE)
+        CommPrint(1, "\n");
+      e = e->next;
+    }
+    CommPrint(1, "\nCOMPILE_ERR_END\nCOMPILE_FAIL\n");
+  }
+  DocDel(_c);
+}
+
+U0 D2()
+{
+  CommPrint(1, "D2_OK\n");
+  while (!_D_exit) {
+    if (FifoU8Rem(comm_ports[2].RX_fifo, &Dc)) {
+      if (Dc == 4) {
+        Db[Di] = 0;
+        _DRun(Db);
+        CommPrint(1, "D_DONE\n");
+        Di = 0;
+      } else if (Di < 131071) {
+        Db[Di++] = Dc;
+      }
+    } else {
+      Sleep(10);
+    }
+  }
+  CommPrint(1, "D_EXIT\n");
+}
+"""
 
 
 def log_size():
@@ -176,6 +237,33 @@ def _prep(body: bytes) -> bytes:
     return body
 
 
+def _auto_screenshot(label: str) -> str | None:
+    """Snap the QEMU framebuffer when a COMPILE_FAIL is seen. Numbered
+    so successive failures don't stomp each other. Returns saved path
+    (or None on error)."""
+    import subprocess
+    sname = "".join(c if c.isalnum() else "_" for c in label)[:40]
+    n = 0
+    while True:
+        png = REPO / "build" / f"fail-{sname}-{n:02d}.png"
+        if not png.exists():
+            break
+        n += 1
+    ppm = png.with_suffix(".ppm")
+    env = {**os.environ,
+           "QEMU_SOCK": str(MON),
+           "SCREEN_PNG": str(png),
+           "SCREEN_PPM": str(ppm)}
+    try:
+        subprocess.run(["bash", str(REPO / "scripts" / "screenshot.sh")],
+                       env=env, check=True, capture_output=True)
+    except subprocess.CalledProcessError as e:
+        print(f"!! screenshot.sh failed: {e.stderr.decode(errors='replace')}",
+              file=sys.stderr)
+        return None
+    return str(png)
+
+
 def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
     since = log_size()
     push_chunk(payload)
@@ -185,6 +273,17 @@ def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
     sys.stdout.write("\n")
     if not ok:
         print(f"!! D_DONE timeout for {label}", file=sys.stderr)
+        return False
+    if "COMPILE_FAIL" in captured:
+        # Daemon caught a 'Compiler' throw inside ExePutS. The captured
+        # text between COMPILE_ERR_BEGIN/END already contains the lexer
+        # error. Snap the framebuffer too — sometimes Print attrs get
+        # eaten by DolDoc and the captured text is partial.
+        shot = _auto_screenshot(label)
+        msg = f"!! COMPILE_FAIL on {label}"
+        if shot:
+            msg += f" — screenshot: {shot}"
+        print(msg, file=sys.stderr)
         return False
     return True
 
@@ -235,7 +334,32 @@ def main():
         if not ok:
             sys.exit("error: D_OK never appeared after typing daemon. "
                      "Check screen-temple.png for parser errors.")
-        print("==> daemon up (D_OK)")
+        print("==> stage-1 daemon up (D_OK)")
+
+        # Upgrade to stage-2 (D2) — pushes _DRun + D2 source through
+        # stage-1 ExePutS, exits stage-1, and starts D2 in adam.
+        # Stage-2 emits COMPILE_OK / COMPILE_ERR_BEGIN..END / COMPILE_FAIL
+        # sentinels per chunk, capturing the lexer's framebuffer output
+        # over COM1.
+        print(f"==> upgrading to stage-2 daemon "
+              f"({len(DAEMON_V2_SOURCE)}B over COM2)")
+        since = log_size()
+        push_chunk(DAEMON_V2_SOURCE.encode())
+        ok, captured = wait_for("D_DONE", since=since, timeout=15.0)
+        if not ok:
+            sys.exit(f"error: stage-2 source did not D_DONE. log:\n{captured}")
+        # Now break stage-1 D() loop so adam returns to its REPL.
+        since = log_size()
+        push_chunk(b"_D_exit=TRUE;")
+        ok, _ = wait_for("D_EXIT", since=since, timeout=10.0)
+        if not ok:
+            sys.exit("error: stage-1 D_EXIT not seen")
+        # Reset _D_exit and start D2 from adam's REPL.
+        sendkey("_D_exit=FALSE;D2();", enter=True, delay=0.05)
+        ok, _ = wait_for("D2_OK", since=since, timeout=10.0)
+        if not ok:
+            sys.exit("error: D2_OK never appeared. Check screen-temple.png.")
+        print("==> stage-2 daemon up (D2_OK)")
 
     src_dir = Path(args.src_dir).resolve() if args.src_dir else REPO / "src"
     test_dir = Path(args.test_dir).resolve() if args.test_dir else REPO / "tests"
