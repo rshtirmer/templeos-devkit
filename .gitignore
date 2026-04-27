@@ -11,7 +11,12 @@ build/
 # Editor
 *.swp
 .idea/
-.vscode/
+.vscode/*
+# Workspace-level editor config we DO want shared (lint task + file
+# associations for the HolyC extension). Personal stuff like launch.json
+# and per-user settings remain ignored above.
+!.vscode/tasks.json
+!.vscode/settings.json
 
 # Python bytecode
 __pycache__/

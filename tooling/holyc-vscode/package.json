@@ -1,0 +1,38 @@
+{
+  "name": "holyc",
+  "displayName": "HolyC",
+  "description": "Syntax highlighting for HolyC / ZealC (.ZC, .HC, .HH) — TempleOS / ZealOS.",
+  "version": "0.1.0",
+  "publisher": "local",
+  "engines": {
+    "vscode": "^1.60.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "holyc",
+        "aliases": [
+          "HolyC",
+          "ZealC",
+          "holyc"
+        ],
+        "extensions": [
+          ".ZC",
+          ".HC",
+          ".HH"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "holyc",
+        "scopeName": "source.holyc",
+        "path": "./syntaxes/holyc.tmLanguage.json"
+      }
+    ]
+  }
+}

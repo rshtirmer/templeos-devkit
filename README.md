@@ -51,6 +51,7 @@ vendor/zealos/    ZealOS BIOS ISO + installed disk.qcow2  (gitignored)
 src/              persistent HolyC: Setup.ZC, future tools  (committed)
 tests/            test framework + battery (T_*.ZC files)   (committed)
 scripts/          bash + python utilities                   (committed)
+tooling/          editor extensions (VSCode, Neovim)        (committed)
 build/            shuttle.img, serial.log, screen.png       (gitignored)
 Makefile          all the targets below
 ```
@@ -81,6 +82,7 @@ or close the QEMU window) and any future `make test` is fully autonomous.
 ```sh
 make test           # rebuilds shuttle from src/+tests/, boots, runs, parses log
 make test T=Hello   # only run tests whose filename contains 'Hello'
+make lint           # host-side static lint of HolyC — boot-phase quirks, balance
 make watch          # re-run on src/ or tests/ change (needs `brew install fswatch`)
 make dev            # interactive: same boot, no auto-exit, you see the desktop
 make repl           # dev + live REPL daemon on COM2 — push code with scripts/zpush.sh
@@ -128,6 +130,32 @@ user-mode → PCnet → ZealOS TCP. Chardev-socket on COM1 swapping out the
 file backend lost MakeHome's CommPrint output entirely. The current
 shape — COM1=file (TX, unchanged), COM2=chardev-socket (RX) — was
 untested before and is the path of least resistance.
+
+## Editor support
+
+Two local extensions, install via symlink — no marketplace, no plugin
+manager required.
+
+```sh
+# VSCode
+ln -s "$(pwd)/tooling/holyc-vscode" ~/.vscode/extensions/local.holyc-0.1.0
+
+# Neovim (native package layout)
+mkdir -p ~/.config/nvim/pack/local/start
+ln -s "$(pwd)/tooling/holyc-nvim" ~/.config/nvim/pack/local/start/holyc
+```
+
+Both extensions cover the same surface: HolyC primitive types
+(`U0`/`U8`/…/`F64`/`Bool`), ZealOS class types (`C[A-Z]…`), control flow
+including sub-switch `start`/`end`, storage modifiers (`extern`,
+`public`, `interrupt`, `lastclass`, `lock`, …), DolDoc `$$` escape,
+multi-char literals, preprocessor directives, and the kernel/stdlib
+functions this repo uses. Diagnostics for the boot-phase quirks
+documented in `NOTES.md` are out of scope — for ground truth, push
+through `make repl` + `scripts/zpush.sh`.
+
+See `tooling/holyc-vscode/README.md` and `tooling/holyc-nvim/README.md`
+for details.
 
 ## Credits
 

@@ -1,4 +1,4 @@
-.PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast watch clean clean-disk help
+.PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help
 
 ZEALOS_URL := https://github.com/Zeal-Operating-System/ZealOS/releases/download/latest/ZealOS-PublicDomain-BIOS-2025-11-10-02_56_42.iso
 ISO        := vendor/zealos/zealos.iso
@@ -22,6 +22,7 @@ help:
 	@echo "make test           build shuttle, boot dev, parse serial.log, exit 0/1"
 	@echo "make test T=Hello   only run tests whose filename contains 'Hello'"
 	@echo "make test-fast      push tests to running 'make repl' VM (sub-second)"
+	@echo "make lint           static-lint src/ and tests/ — boot-phase quirks, balance"
 	@echo "make watch          re-run 'make test' on src/ or tests/ change (needs fswatch)"
 	@echo "make clean          remove build artifacts (keeps ISO and disk)"
 	@echo "make clean-disk     wipe the installed disk (forces a fresh install)"
@@ -78,6 +79,14 @@ test: $(DISK) shuttle
 # in another terminal). Sub-second iteration vs ~30s cold boot. T= filters.
 test-fast:
 	@T="$(T)" python3 scripts/test-fast.py
+
+# Host-side static lint of HolyC sources. Catches the boot-phase quirks
+# documented in NOTES.md plus balance / unterminated-string hazards.
+# Approximate (regex/token, not the real parser) — for ground truth use
+# `make repl` + scripts/zpush.sh. Exits 1 on any error-level diagnostic;
+# warnings don't fail the build.
+lint:
+	@python3 scripts/holyc-lint.py src tests
 
 # Re-run the test loop on any change under src/ or tests/. Single shot per
 # event; if you save 5 files in 200ms, fswatch coalesces. macOS only;
