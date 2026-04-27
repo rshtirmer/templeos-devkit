@@ -1,0 +1,2 @@
+&LexExcept PrsExpression2 PrsExpression PrsStmt ERROR: Invalid lval at "INT:1"  U0 ELL_f() { 5 += 1; }
+&LexExcept PrsExpression PrsStmt PrsStmt ERROR: Compiler Parse Error at "INT:1"  U0 ELL_f() { 5 += 1; }

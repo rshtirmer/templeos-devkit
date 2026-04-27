@@ -1,0 +1,1 @@
+&LexExcept PrsStmt PrsStmt PrsFun ERROR: Duplicate goto label at "EDL_a"  U0 EDL_f() { EDL_a: ; EDL_a: ; }

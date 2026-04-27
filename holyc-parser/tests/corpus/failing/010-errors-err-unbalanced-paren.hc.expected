@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Missing ')' at ";"  
+&LexExcept PrsExpression &LexExpression2Bin PrsVarInit ERROR: Compiler Parse Error at ";"
