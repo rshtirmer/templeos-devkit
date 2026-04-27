@@ -1,6 +1,8 @@
-# ZealOS ISO + installed disk — fetched/built locally, not committed
+# ZealOS / TempleOS ISO + installed disk — fetched/built locally, not committed
 vendor/zealos/*.iso
 vendor/zealos/*.qcow2
+vendor/templeos/*.iso
+vendor/templeos/*.qcow2
 
 # Ephemeral build artifacts
 build/

@@ -5,9 +5,9 @@
 set -euo pipefail
 
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
-SOCK="$REPO/build/qemu.sock"
-PPM="$REPO/build/screen.ppm"
-PNG="$REPO/build/screen.png"
+SOCK="${QEMU_SOCK:-$REPO/build/qemu.sock}"
+PPM="${SCREEN_PPM:-$REPO/build/screen.ppm}"
+PNG="${SCREEN_PNG:-$REPO/build/screen.png}"
 
 if [ ! -S "$SOCK" ]; then
   echo "error: $SOCK not found — is QEMU running with -monitor?" >&2

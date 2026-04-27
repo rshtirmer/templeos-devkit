@@ -9,13 +9,14 @@ Usage:
 The monitor socket path is build/qemu.sock relative to repo root.
 """
 import argparse
+import os
 import socket
 import sys
 import time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SOCK = REPO / "build" / "qemu.sock"
+SOCK = Path(os.environ.get("QEMU_SOCK", REPO / "build" / "qemu.sock"))
 
 # Map ASCII char -> QEMU sendkey arg.
 # QEMU keynames: https://qemu.readthedocs.io/en/latest/system/keys.html
@@ -88,17 +89,21 @@ def send_lines(lines: list[str], delay: float) -> str:
         # connecting to the monitor is intermittently dropped (banner-drain
         # race). A modifier-only press is benign on the ZealOS side: it
         # doesn't generate a typed character.
-        s.sendall(b"sendkey shift\n")
+        s.sendall(b"sendkey shift 30\n")
         time.sleep(delay)
-        # Send each sendkey command, with a short inter-key delay so the
-        # guest scancode buffer doesn't drop keys. Don't block on recv
-        # between sends — QEMU's monitor will echo prompts but we don't
-        # care; we just need the keys delivered.
+        # QEMU's `sendkey` defaults to a 100ms hold — sending the next
+        # one before that completes queues internally. If we then close
+        # the socket before the queue drains, pending keys are aborted
+        # mid-stream. Two fixes: shorten hold (`sendkey x 30` = 30ms
+        # hold), and after the loop wait long enough for a worst-case
+        # full queue to drain.
         for line in lines:
-            s.sendall((line + "\n").encode())
+            s.sendall((line + " 30\n").encode())
             time.sleep(delay)
-        # Drain whatever's pending so the next caller starts clean.
-        time.sleep(0.1)
+        # Drain wait: each sendkey may take up to ~50ms (30ms hold + IPC).
+        # If we issued 100 keys at 0.05s, that's 5s of issuance + up to
+        # 5s of synthesis — be generous.
+        time.sleep(max(0.5, 0.1 * len(lines)))
         out = []
         try:
             while True:

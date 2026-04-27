@@ -1,4 +1,39 @@
-.PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help
+.PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help \
+	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple
+
+# ---- Original TempleOS (Terry's 2017 Distro) — side-by-side compat target ----
+# No shuttle / FAT image / payload disk: the host pushes the entire test
+# battery over COM2 via scripts/temple-run.py once the VM is up.
+TEMPLEOS_URL  := https://templeos.org/Downloads/TempleOS.ISO
+TEMPLE_ISO    := vendor/templeos/templeos.iso
+TEMPLE_DISK   := vendor/templeos/disk.qcow2
+
+setup-temple: $(TEMPLE_ISO)
+$(TEMPLE_ISO):
+	mkdir -p $(dir $@)
+	curl -sSL -o $@ "$(TEMPLEOS_URL)"
+	@ls -lh $@
+
+disk-temple: $(TEMPLE_DISK)
+$(TEMPLE_DISK):
+	mkdir -p $(dir $@)
+	qemu-img create -f qcow2 $@ $(DISK_SIZE)
+
+install-temple: $(TEMPLE_ISO) $(TEMPLE_DISK)
+	bash scripts/boot-temple.sh install
+
+boot-temple-disk: $(TEMPLE_DISK)
+	bash scripts/boot-temple.sh disk
+
+dev-temple: $(TEMPLE_DISK)
+	bash scripts/boot-temple.sh dev
+
+# Push the battery to a running dev-temple VM (boot-temple.sh dev must
+# be up; pick Drive C in the bootloader and skip the Once.HC tour with
+# 'n', then run this). Use T= to filter test files.
+test-temple:
+	T="$(T)" python3 scripts/temple-run.py --filter="$(T)"
+
 
 ZEALOS_URL := https://github.com/Zeal-Operating-System/ZealOS/releases/download/latest/ZealOS-PublicDomain-BIOS-2025-11-10-02_56_42.iso
 ISO        := vendor/zealos/zealos.iso

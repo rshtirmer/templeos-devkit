@@ -115,6 +115,65 @@ stack with `TCPSocketListen`, modern bootloader (Limine), `Once()`/
 `SysOnce()` persistent boot scripts, and drivers for E1000/RTL8139/
 VirtIONet. It renames HolyC to ZealC; same language.
 
+## Running the same battery on stock TempleOS
+
+Side-by-side path that runs `tests/T_*.ZC` on Terry's 2017 Distro
+itself, no ZealOS. Useful for portability sanity checks and for the
+"works on the actual altar" verdict.
+
+```sh
+make setup-temple    # fetch templeos.org/Downloads/TempleOS.ISO
+make disk-temple     # blank 4G qcow2 in vendor/templeos/
+make install-temple  # interactive — answer 'n' to tour, accept defaults
+                     # close the QEMU window when desktop appears
+make dev-temple      # boot disk + COM2 socket
+                     #   in QEMU window: '1<Enter>' at the boot menu,
+                     #   then 'n<Enter>' at the Once.HC tour prompt
+make test-temple     # in another shell — types daemon + pushes battery
+                     # ~2 min for a full battery
+```
+
+`scripts/temple-run.py` types a tiny in-memory JIT daemon into
+`adam_task` over the QEMU monitor (`sendkey`), then streams each `.ZC`
+file as raw bytes through a COM2 chardev socket. The daemon calls
+`ExePutS(buf)` on each chunk — JIT-compiles in memory, no disk write
+or `#include`. Top-level `PASS` / `ASSERT_EQ` calls in test files
+execute during the push; output streams back over COM1 and lands in
+`build/serial-temple.log`.
+
+The dev loop differs from ZealOS in three load-bearing ways:
+
+1. **Machine: `pc` not `q35`.** Terry's 2017 distro has no AHCI driver.
+   `boot-temple.sh` uses i440FX + plain IDE.
+2. **No shuttle / payload disk.** TempleOS reads FAT32 from the
+   secondary IDE slot unreliably and refuses to switch `Drv()` to an
+   ISO9660 mount (`File System Not Supported`). We push everything
+   over COM2 instead.
+3. **Daemon runs in `adam_task` directly, not via `Spawn`.** Spawned
+   tasks' JIT compile context doesn't reliably see adam's
+   `#include`'d symbols (`CommPrint`, `FifoU8Rem`, `comm_ports`) via
+   the `hash_table->next` chain. Calling `D()` from adam means adam's
+   REPL blocks forever — that's fine, every push goes via COM2 from
+   then on.
+
+If your fork has more `src/*.ZC` files that depend on ZealOS-only APIs
+(AHCI, ZealOS-renamed FIFO calls), pass `--skip A.ZC,B.ZC` to
+`temple-run.py`. If alphabetical push order doesn't satisfy `#include`
+deps in your code, pass `--order Foo.ZC,Bar.ZC,Baz.ZC` to override.
+
+Quirks worth knowing if you hit a panic:
+
+- Original TempleOS uses `FifoU8Rem`/`FifoU8Ins`; ZealOS renamed them
+  to `FifoU8Remove`/`FifoU8Insert`.
+- `#include "::/Doc/Comm";` (no extension) appends `.HC.Z` and works.
+  Writing `Comm.HC` literally looks for an uncompressed file that
+  doesn't exist.
+- The earlier `FileWrite` + `ExeFile` design churned the RedSea FS
+  hard enough to panic Adam after ~10 chunks. `ExePutS` sidesteps this.
+- QEMU `sendkey` defaults to a 100 ms hold; tighter pacing without
+  matching `hold_ms=30` and a post-flush wait silently drops keys
+  mid-stream. `scripts/send.py` handles this.
+
 ## Live REPL (experimental — `make repl`)
 
 `src/Daemon.ZC` polls COM2's RX FIFO, executes received HolyC source on
