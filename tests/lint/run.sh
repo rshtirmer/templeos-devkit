@@ -17,6 +17,7 @@ RULES=(
   comma-decl-list
   multi-array-decl
   f32-reference
+  reserved-name-collision
 )
 
 fail=0
