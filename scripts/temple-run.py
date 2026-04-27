@@ -195,6 +195,15 @@ def main():
                     help="assume daemon already running (D_OK already in log)")
     ap.add_argument("--filter", default="",
                     help="substring filter for tests (T= equivalent)")
+    ap.add_argument("--src-dir", default=os.environ.get("SRC_DIR", ""),
+                    help="override src/ directory (env: SRC_DIR). "
+                         "Default: <devkit>/src. Use this when the devkit is "
+                         "consumed as a submodule and the .ZC files live in "
+                         "the parent project.")
+    ap.add_argument("--test-dir", default=os.environ.get("TEST_DIR", ""),
+                    help="override tests/ directory (env: TEST_DIR). "
+                         "Default: <devkit>/tests. Assert.ZC must live there "
+                         "(symlink to ../devkit/tests/Assert.ZC works).")
     ap.add_argument("--skip", default="",
                     help="comma-separated src filenames to skip "
                          "(default: Daemon.ZC,Setup.ZC — both ZealOS-only)")
@@ -228,8 +237,8 @@ def main():
                      "Check screen-temple.png for parser errors.")
         print("==> daemon up (D_OK)")
 
-    src_dir = REPO / "src"
-    test_dir = REPO / "tests"
+    src_dir = Path(args.src_dir).resolve() if args.src_dir else REPO / "src"
+    test_dir = Path(args.test_dir).resolve() if args.test_dir else REPO / "tests"
     # Default skip list: src files that depend on ZealOS-only APIs and
     # won't compile on stock TempleOS. Override with --skip if your fork
     # has more (or fewer).
