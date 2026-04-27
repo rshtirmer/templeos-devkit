@@ -161,6 +161,37 @@ If your fork has more `src/*.ZC` files that depend on ZealOS-only APIs
 `temple-run.py`. If alphabetical push order doesn't satisfy `#include`
 deps in your code, pass `--order Foo.ZC,Bar.ZC,Baz.ZC` to override.
 
+ZealOS↔TempleOS API renames are auto-substituted on push (see
+`COMPAT_SUBS` in `temple-run.py`): `MessageGet→GetMsg`,
+`MESSAGE_KEY_DOWN/UP→MSG_KEY_DOWN/UP`,
+`WIG_USER_TASK_DEFAULT→WIG_USER_TASK_DFT`, `mouse→ms`,
+`tS → (cnts.jiffies(F64)/1000.0)`. Add to that list if your fork hits
+more.
+
+### Launching an interactive viewer (`make launch-temple`)
+
+The test path keeps the daemon running forever (adam blocks in `D()`).
+For an interactive tool — an editor, a viewer, anything WM-tile based —
+you need adam's REPL back. The daemon picks up a `_D_exit=TRUE;` push
+and falls out of the loop, letting adam continue. `--launch[=CMD]`
+automates that:
+
+```sh
+# push src files, exit the daemon, sendkey CMD into adam's prompt:
+make launch-temple CMD='YourViewer(2, 8000);'
+
+# or no CMD — just exits the daemon, leaves you at adam's REPL:
+make launch-temple
+```
+
+Why we go through adam instead of `Spawn`'ing the viewer in its own
+task: Spawn'd tasks' JIT compile context doesn't reliably resolve
+adam's `ExePutS`'d symbols via the `hash_table->next` chain, and
+spawned tasks lack the `UserStartUp` setup (CDoc, `display_flags`)
+that a real user-task gets — `WinMax` / `Fs->draw_it` silently no-op.
+Running in adam means full WM chrome (resize handles, drag, [X]) and
+all the symbols just work.
+
 Quirks worth knowing if you hit a panic:
 
 - Original TempleOS uses `FifoU8Rem`/`FifoU8Ins`; ZealOS renamed them
