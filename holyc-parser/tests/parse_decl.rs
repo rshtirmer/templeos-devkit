@@ -91,11 +91,16 @@ fn global_unsized_array() {
 // -------- multi-decl bug-compat (§4.3 / §5.1) --------
 
 #[test]
-fn global_multi_decl_default_errors() {
+fn global_multi_decl_default_accepted() {
+    // Default config matches what TempleOS accepts via ExePutS:
+    // top-level multi-decl works (the JIT path goes through the
+    // function-scope multi-decl logic, not PrsGlblVarLst).
+    // Corpus snippets 143/166 confirm.
     let (m, rules) = parse_top("F64 a, b;");
-    // We should get a GlobalDeclList with 2 entries AND a multi-decl error.
-    let has_err = rules.iter().any(|r| r == "compiler-multi-decl-global");
-    assert!(has_err, "expected compiler-multi-decl-global rule, got: {:?}", rules);
+    assert!(
+        !rules.iter().any(|r| r == "compiler-multi-decl-global"),
+        "default config should accept multi-decl globals: {:?}", rules
+    );
     match &m.items[0] {
         TopItem::GlobalDeclList(v) => assert_eq!(v.len(), 2),
         other => panic!("expected GlobalDeclList, got {:?}", other),
@@ -103,21 +108,20 @@ fn global_multi_decl_default_errors() {
 }
 
 #[test]
-fn global_multi_decl_allowed_with_flag() {
-    let cfg = ParseConfig { allow_multi_decl_globals: true, ..Default::default() };
-    let (m, rules) = parse_top_with("F64 a, b;", cfg);
-    assert!(!rules.iter().any(|r| r == "compiler-multi-decl-global"));
-    match &m.items[0] {
-        TopItem::GlobalDeclList(v) => assert_eq!(v.len(), 2),
-        TopItem::Variable(_) => panic!("expected GlobalDeclList for multi-decl"),
-        other => panic!("got {:?}", other),
-    }
+fn global_multi_decl_strict_errors() {
+    // Strict mode (matches the AOT compile path that does reject).
+    let cfg = ParseConfig { allow_multi_decl_globals: false, ..Default::default() };
+    let (_m, rules) = parse_top_with("F64 a, b;", cfg);
+    assert!(
+        rules.iter().any(|r| r == "compiler-multi-decl-global"),
+        "strict mode should flag multi-decl: {:?}", rules
+    );
 }
 
 #[test]
-// un-ignored after expr+type integration
-fn global_multi_array_decl_errors_too() {
-    let (_m, rules) = parse_top("F64 m[9], im[9];");
+fn global_multi_array_decl_strict_errors_too() {
+    let cfg = ParseConfig { allow_multi_decl_globals: false, ..Default::default() };
+    let (_m, rules) = parse_top_with("F64 m[9], im[9];", cfg);
     assert!(rules.iter().any(|r| r == "compiler-multi-decl-global"));
 }
 
