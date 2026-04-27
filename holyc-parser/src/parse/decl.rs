@@ -93,17 +93,24 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
                 Some(TopItem::Stmt(s))
             }
             None => {
-                // bare ident: could be a label `IDENT :` (rejected at
-                // file scope per §5.1) or an expression-stmt.
+                // bare ident at file scope. Could be:
+                //   - `IDENT:` — label (rejected at file scope per §5.1)
+                //   - `IDENT IDENT …` or `IDENT *…` — decl whose type is
+                //     a user-defined class (e.g. `cvar_t v;`,
+                //     `cvar_t *Cvar_FindVar(...)`)
+                //   - `IDENT(…)` — function-call expression statement
+                //   - anything else — expression statement
                 if matches!(p.peek_at(1), TokenKind::Colon) {
                     let pos = p.current_pos();
                     p.bump(); p.bump();
                     p.error_at(pos, "no-global-labels", "No global labels at ");
-                    Some(TopItem::Empty)
-                } else {
-                    let s = crate::parse::stmt::parse_statement_top(p)?;
-                    Some(TopItem::Stmt(s))
+                    return Some(TopItem::Empty);
                 }
+                if looks_like_named_type_decl(p) {
+                    return parse_global_decl(p);
+                }
+                let s = crate::parse::stmt::parse_statement_top(p)?;
+                Some(TopItem::Stmt(s))
             }
         },
         _ => {
@@ -137,6 +144,7 @@ fn parse_preprocessor(p: &mut Parser) -> Option<PpDirective> {
             PpDirective::Include(s)
         }
         "define" => {
+            let id_line = p.current_pos().line;
             let id = match p.peek().clone() {
                 TokenKind::Ident(s) => { p.bump(); s }
                 _ => {
@@ -144,17 +152,15 @@ fn parse_preprocessor(p: &mut Parser) -> Option<PpDirective> {
                     String::new()
                 }
             };
-            // Body: take everything until end of "logical line". Our
-            // lexer doesn't track newlines as tokens, so we approximate
-            // by collecting tokens up to the next preprocessor `Hash`,
-            // EOF, or a sentinel. Since #define is rare in our tests we
-            // bias towards "single token then stop".
+            // Body: take everything on the same logical line as the
+            // `#define` keyword. The lexer drops newlines as tokens
+            // but spans carry line numbers — stop when we see a token
+            // whose line differs from the directive's own line. Also
+            // stop at `#`, `;` and EOF for safety.
             let mut body = String::new();
-            // Capture tokens eagerly until we see another `#` or EOF.
-            // This isn't perfect — proper EOL tracking would require
-            // lexer changes. Kept minimal as the spec allows.
             while !p.at_eof()
                 && !matches!(p.peek(), TokenKind::Hash | TokenKind::Semicolon)
+                && p.current_pos().line == id_line
             {
                 let t = p.bump();
                 if !body.is_empty() { body.push(' '); }
@@ -255,6 +261,25 @@ fn token_text(k: &TokenKind) -> String {
 // ============================================================
 // Global declaration: variable, function, or modifier-led.
 // ============================================================
+
+/// Heuristic: does the cursor look like `IDENT *... IDENT` (a decl
+/// using a named class type)? We use this to route bare-ident
+/// top-level positions to the decl parser instead of letting them
+/// fall through to expression-stmt. The Ident at peek(0) is the
+/// proposed class name; we walk through any `*`s and check that
+/// peek+N is another non-keyword Ident (the variable / function
+/// name being declared).
+fn looks_like_named_type_decl(p: &Parser) -> bool {
+    // peek(0) is already known to be a non-keyword Ident.
+    let mut offset = 1usize;
+    while matches!(p.peek_at(offset), TokenKind::Star) {
+        offset += 1;
+    }
+    if let TokenKind::Ident(s) = p.peek_at(offset) {
+        return lookup_keyword(s).is_none();
+    }
+    false
+}
 
 fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
     let start = p.current_pos();

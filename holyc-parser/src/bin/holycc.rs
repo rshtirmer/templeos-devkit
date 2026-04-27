@@ -4,19 +4,27 @@
 //! shape as `holyc-lint.py`, so `make lint` consumers see one
 //! uniform format.
 //!
-//! Exit code: 1 if any *errors* were emitted, 0 otherwise. Warnings
-//! don't fail.
+//! Multi-file mode (the default when more than one file is given):
+//! all files are parsed, their declarations unioned into a global
+//! symbol table, then every file is re-walked for unresolved
+//! identifier uses. This catches cross-file dependency bugs (a
+//! symbol used in one file but defined in another that doesn't
+//! sort first in `temple-run.py`'s push order).
+//!
+//! Exit code: 1 if any *errors* were emitted, 0 otherwise.
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use holyc_parser::diag::Severity;
+use holyc_parser::diag::{Diag, Severity};
 use holyc_parser::parse::{parse_module, ParseConfig};
+use holyc_parser::parse::ast::Module;
+use holyc_parser::symbol::Resolver;
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.is_empty() {
-        eprintln!("usage: holycc lint <file-or-dir>...");
+        eprintln!("usage: holycc lint [--no-resolve] <file-or-dir>...");
         return ExitCode::from(2);
     }
     match args[0].as_str() {
@@ -28,13 +36,21 @@ fn main() -> ExitCode {
     }
 }
 
-fn cmd_lint(paths: &[String]) -> ExitCode {
+fn cmd_lint(args: &[String]) -> ExitCode {
+    let mut paths: Vec<&str> = Vec::new();
+    let mut do_resolve = true;
+    for a in args {
+        match a.as_str() {
+            "--no-resolve" => do_resolve = false,
+            other => paths.push(other),
+        }
+    }
     if paths.is_empty() {
-        eprintln!("usage: holycc lint <file-or-dir>...");
+        eprintln!("usage: holycc lint [--no-resolve] <file-or-dir>...");
         return ExitCode::from(2);
     }
     let mut files = Vec::new();
-    for arg in paths {
+    for arg in &paths {
         collect(Path::new(arg), &mut files);
     }
     if files.is_empty() {
@@ -43,36 +59,52 @@ fn cmd_lint(paths: &[String]) -> ExitCode {
     }
 
     let cfg = ParseConfig::default();
-    let mut total_errors = 0usize;
-    let mut total_warnings = 0usize;
+    let mut all_diags: Vec<Diag> = Vec::new();
+    let mut modules: Vec<(String, Module)> = Vec::new();
 
+    // Phase 1: parse each file, collect parser diags.
     for file in &files {
         let src = match std::fs::read_to_string(file) {
             Ok(s) => s,
             Err(e) => {
                 eprintln!("{}: read error: {e}", file.display());
-                total_errors += 1;
-                continue;
+                return ExitCode::from(2);
             }
         };
-        let (_module, diags) = parse_module(file.display().to_string(), &src, cfg);
-        for d in &diags {
-            println!("{d}");
-            match d.severity {
-                Severity::Error => total_errors += 1,
-                Severity::Warning => total_warnings += 1,
-            }
+        let label = file.display().to_string();
+        let (m, diags) = parse_module(label.clone(), &src, cfg);
+        all_diags.extend(diags);
+        modules.push((label, m));
+    }
+
+    // Phase 2 (optional): symbol resolution across all parsed modules.
+    if do_resolve {
+        let mut resolver = Resolver::new();
+        for (label, m) in &modules {
+            resolver.register_module(label, m);
+        }
+        for (label, m) in &modules {
+            all_diags.extend(resolver.check_module(label, m));
+        }
+    }
+
+    let mut total_errors = 0usize;
+    let mut total_warnings = 0usize;
+    for d in &all_diags {
+        println!("{d}");
+        match d.severity {
+            Severity::Error => total_errors += 1,
+            Severity::Warning => total_warnings += 1,
         }
     }
     eprintln!(
-        "{} error(s), {} warning(s) in {} file(s)",
-        total_errors, total_warnings, files.len()
+        "{} error(s), {} warning(s) in {} file(s){}",
+        total_errors,
+        total_warnings,
+        files.len(),
+        if do_resolve { " (cross-file resolution on)" } else { "" }
     );
-    if total_errors > 0 {
-        ExitCode::from(1)
-    } else {
-        ExitCode::from(0)
-    }
+    if total_errors > 0 { ExitCode::from(1) } else { ExitCode::from(0) }
 }
 
 /// Recursive walk: take any `.HC`/`.ZC`/`.HH` files at or under `p`.

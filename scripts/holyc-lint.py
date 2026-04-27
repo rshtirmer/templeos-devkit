@@ -518,9 +518,11 @@ def lint(path: str, src: str) -> list[Diag]:
     # constants installed in the kernel symbol table. Used as parameter
     # names they get resolved to the constant value DURING PrsType, so
     # the parser sees an INT in a position expecting `*` and trips
-    # with: "Expecting '*' at INT:<bits>". Diagnosed in temple-quake's
-    # Phase-1 mathlib port (see CLAUDE.md). Catch the common ones at
-    # parameter-list and local-decl positions.
+    # with: "Expecting '*' at INT:<bits>". Surfaced via experimentation
+    # on TempleOS — using `eps` as a function parameter resolves it to
+    # the constant value (bit pattern of 2.22e-16) before allocating
+    # the slot. Catch the common ones at parameter-list and local-decl
+    # positions.
     #
     # Match: TYPE_KW [`*` …] NAME — when NAME is a reserved word.
     _RESERVED_NAMES = {
