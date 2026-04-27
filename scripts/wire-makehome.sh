@@ -14,8 +14,14 @@ if [ ! -S "$REPO/build/qemu.sock" ]; then
   exit 1
 fi
 
-echo "==> sending Setup.ZC include"
-"$REPO/scripts/send.py" '#include "B:/Setup.ZC";' --enter --delay 0.05
+echo "==> mounting shuttle (AHCI port 2) as E: and sourcing Setup.ZC"
+# ZealOS does not auto-mount the shuttle on first boot — we have to
+# attach it explicitly. This is the same block Setup.ZC writes into
+# ~/MakeHome.ZC for subsequent boots. Sleep gives AHCI a moment before
+# we read the FAT.
+"$REPO/scripts/send.py" 'CBlkDev *bd; bd = BlkDevNextFreeSlot('"'"'E'"'"', 2); AHCIPortInit(bd, &blkdev.ahci_hba->ports[2], 2); BlkDevAdd(bd, 1, 0, 1); Sleep(2000);' --enter --delay 0.05
+sleep 3
+"$REPO/scripts/send.py" '#include "E:/Setup.ZC";' --enter --delay 0.05
 
 # Give the FileWrite a beat, then snap so we can verify SETUP_OK.
 sleep 3
