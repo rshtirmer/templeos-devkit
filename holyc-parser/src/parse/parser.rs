@@ -6,19 +6,38 @@
 use crate::diag::{Diag, Severity};
 use crate::lex::{Pos, Token, TokenKind};
 
-/// Bug-compat configuration. Default = "match TempleOS exactly";
-/// fixes are opt-in (per parse-spec §8.5).
-#[derive(Clone, Copy, Debug, Default)]
+/// Bug-compat configuration. Defaults match what the live VM
+/// actually accepts via ExePutS (the JIT path our dev loop uses) —
+/// not necessarily what parse-spec literally says. Where the corpus
+/// disagrees with the spec, the corpus wins; the spec then has the
+/// flag for opt-in strictness.
+#[derive(Clone, Copy, Debug)]
 pub struct ParseConfig {
-    /// Allow `F64 a, b;` at file scope. TempleOS rejects (PrsVar.HC:222).
+    /// Allow `F64 a, b;` at file scope. parse-spec §4.3 says PrsGlblVarLst
+    /// (PrsVar.HC:222) rejects, but ExePutS routes top-level decls
+    /// through the function-scope path that DOES handle multi-decl —
+    /// corpus snippets 143/166 confirm. Default true; set false to
+    /// match the AOT compile path that does reject.
     pub allow_multi_decl_globals: bool,
-    /// Allow `continue;` keyword. TempleOS doesn't have one.
+    /// Allow `continue;` keyword. TempleOS has no `continue` (parse-spec §5.2).
     pub allow_continue_keyword: bool,
-    /// Allow `(TYPE)expr` C-style cast. TempleOS only takes the postfix
-    /// HolyC form.
+    /// Allow `(TYPE)expr` C-style cast. TempleOS uses postfix typecast.
     pub allow_c_style_cast: bool,
-    /// Allow `for (I64 i = 0; ...)` at file scope. TempleOS trips here.
+    /// Allow `for (I64 i = 0; ...)` at file scope. TempleOS trips here
+    /// even at fn scope per CorpusBot's surprise #1.
     pub allow_for_decl_top_level: bool,
+}
+
+impl Default for ParseConfig {
+    fn default() -> Self {
+        Self {
+            // Corpus-validated: ExePutS top-level multi-decl works.
+            allow_multi_decl_globals: true,
+            allow_continue_keyword: false,
+            allow_c_style_cast: false,
+            allow_for_decl_top_level: false,
+        }
+    }
 }
 
 pub struct Parser {

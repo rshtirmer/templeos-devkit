@@ -92,7 +92,7 @@ fn corpus_agreement_summary() {
             t.pass_match += 1;
         } else {
             t.pass_fp += 1;
-            if sample_fp.len() < 5 { sample_fp.push((path, errs)); }
+            sample_fp.push((path, errs));
         }
     }
     for path in list_hc(&failing) {
@@ -131,7 +131,23 @@ fn corpus_agreement_summary() {
     }
     println!();
 
-    // Non-gating for now. Once agreement is consistently >90% we'll
-    // convert this to: `assert!(t.agreement() > 0.90)`.
+    // Regression gate. These numbers are the **floor** — they may
+    // tighten as we triage false negatives, but never relax. New
+    // mismatches must be paired with an explicit relaxation here.
     assert!(t.total() > 0, "corpus appears empty — check fixture dirs");
+    assert_eq!(
+        t.pass_fp, 0,
+        "regression: parser flags a passing snippet (was 0); see sample false positives above"
+    );
+    assert!(
+        t.fail_fn <= 15,
+        "regression: more failing snippets accepted than the prior floor (15); investigate samples"
+    );
+    // Floor: 195 of 210 agree (92.857%). Stored as an integer count
+    // so float rounding doesn't ever flake the gate.
+    let agreed = t.pass_match + t.fail_match;
+    assert!(
+        agreed >= 195,
+        "regression: corpus agreement dropped below 195/210 (got {agreed})"
+    );
 }
