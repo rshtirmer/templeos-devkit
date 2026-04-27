@@ -44,12 +44,12 @@ fn parse_statement_inner(p: &mut Parser, at_file_scope: bool) -> Option<Stmt> {
             }
         },
         TokenKind::StrLit(_) | TokenKind::CharLit(_) => {
-            // Implicit Print at any scope (parse-spec §5.13). The AST
-            // representation is just `Stmt::Expr(StrLit/CharLit)`; the
-            // expression parser would normally handle this — we call
-            // into it and if it returns None, fabricate an Expr-only
-            // path so file-scope tests still see the right shape.
-            parse_expr_stmt(p, start)
+            // Implicit Print/PutChars at any scope (parse-spec §5.13).
+            // After the leading literal, accept any comma-separated
+            // expression list before the `;`. We model this as
+            // `ExprKind::Comma([head, args...])`; downstream typeck
+            // can lower to a Print/PutChars call.
+            parse_implicit_print_stmt(p, start)
         }
         _ => parse_expr_stmt(p, start),
     }
@@ -79,6 +79,35 @@ fn parse_expr_stmt(p: &mut Parser, start: crate::lex::Pos) -> Option<Stmt> {
     // it; if not present, it's not fatal — diag was emitted upstream.
     p.eat(&TokenKind::Semicolon);
     let expr = e?;
+    Some(Stmt { kind: StmtKind::Expr(expr), span: (start, p.current_pos()) })
+}
+
+/// `"%d\n", 5;` — implicit Print/PutChars (parse-spec §5.13). The
+/// generic expression parser would mis-handle the trailing comma;
+/// we consume the head literal directly and walk the comma list.
+fn parse_implicit_print_stmt(p: &mut Parser, start: crate::lex::Pos) -> Option<Stmt> {
+    use crate::parse::ast::{Expr, ExprKind};
+    let head_tok = p.bump();
+    let head_kind = match head_tok.kind {
+        TokenKind::StrLit(bytes) => ExprKind::StrLit(bytes),
+        TokenKind::CharLit(v) => ExprKind::CharLit(v),
+        _ => unreachable!("dispatcher guaranteed StrLit or CharLit"),
+    };
+    let head = Expr { kind: head_kind, span: (head_tok.start, head_tok.end) };
+
+    let mut args: Vec<Expr> = vec![head];
+    while p.eat(&TokenKind::Comma) {
+        match crate::parse::expr::parse_expression(p) {
+            Some(e) => args.push(e),
+            None => break,
+        }
+    }
+    p.eat(&TokenKind::Semicolon);
+    let expr = if args.len() == 1 {
+        args.pop().unwrap()
+    } else {
+        Expr { kind: ExprKind::Comma(args), span: (start, p.current_pos()) }
+    };
     Some(Stmt { kind: StmtKind::Expr(expr), span: (start, p.current_pos()) })
 }
 
