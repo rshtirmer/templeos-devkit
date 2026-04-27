@@ -32,6 +32,45 @@ U0 ASSERT_EQ(I64 actual, I64 expected, U8 *name) {
   }
 }
 
+U0 ASSERT_NEAR(F64 actual, F64 expected, F64 eps, U8 *name) {
+  // One-line `if (cond) stmt;` trips the HolyC boot-phase parser
+  // (see devkit/CLAUDE.md). Always brace the body.
+  U8 buf[160];
+  F64 d = actual - expected;
+  if (d < 0.0) {
+    d = -d;
+  }
+  if (d <= eps) {
+    PASS(name);
+  } else {
+    StrPrint(buf, "expected=%f actual=%f eps=%f", expected, actual, eps);
+    FAIL(name, buf);
+  }
+}
+
+U0 ASSERT_VEC3(F64 *a, F64 ex, F64 ey, F64 ez, F64 eps, U8 *name) {
+  U8 buf[200];
+  F64 dx = a[0] - ex;
+  F64 dy = a[1] - ey;
+  F64 dz = a[2] - ez;
+  if (dx < 0.0) {
+    dx = -dx;
+  }
+  if (dy < 0.0) {
+    dy = -dy;
+  }
+  if (dz < 0.0) {
+    dz = -dz;
+  }
+  if (dx <= eps && dy <= eps && dz <= eps) {
+    PASS(name);
+  } else {
+    StrPrint(buf, "expected=(%f,%f,%f) actual=(%f,%f,%f)",
+             ex, ey, ez, a[0], a[1], a[2]);
+    FAIL(name, buf);
+  }
+}
+
 U0 TEST_SUMMARY() {
   CommPrint(1, "TEST_SUMMARY:pass=%d fail=%d\n", _pass_count, _fail_count);
   Print("SUMMARY: pass=%d fail=%d\n", _pass_count, _fail_count);
