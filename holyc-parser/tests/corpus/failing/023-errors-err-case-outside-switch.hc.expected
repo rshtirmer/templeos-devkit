@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Missing expression at "case"  U0 ECOS_f() { case 1: ; }
+&LexExcept PrsExpression PrsStmt PrsStmt ERROR: Compiler Parse Error at "case"  U0 ECOS_f() { case 1: ; }

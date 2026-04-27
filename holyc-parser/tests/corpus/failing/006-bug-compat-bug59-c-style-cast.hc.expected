@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Use TempleOS postfix typecasting at "I64"  F64 b59_y=1.0; I64 b59_x = (I64)b59_y;
+&LexExcept PrsExpression &LexExpression2Bin PrsVarInit ERROR: Compiler Parse Error at "I64"  F64 b59_y=1.0; I64 b59_x = (I64)b59_y;

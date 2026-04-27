@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Invalid lval at "@"  I64 ebt = @;
+&LexExcept PrsExpression &LexExpression2Bin PrsVarInit ERROR: Compiler Parse Error at "@"  I64 ebt = @;

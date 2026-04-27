@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Invalid lval at "some_undecl_ident_xx"  I64 eud = some_undecl_ident_xx;
+&LexExcept PrsExpression &LexExpression2Bin PrsVarInit ERROR: Compiler Parse Error at "some_undecl_ident_xx"  I64 eud = some_undecl_ident_xx;

@@ -1,0 +1,2 @@
+&LexExcept PrsStmt PrsStmt PrsFun ERROR: 'break' not allowed
+";"  U0 EBOL_f() { break; }
