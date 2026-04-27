@@ -304,6 +304,19 @@ fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
             p.bump();
             s
         }
+        TokenKind::Ident(s) => {
+            // Ident IS a HolyC keyword — give a specific message
+            // instead of the generic "Expecting identifier".
+            p.error_at(
+                p.current_pos(),
+                "keyword-as-name",
+                format!(
+                    "`{s}` is a HolyC keyword and can't be used as a \
+                     variable / function name; rename it"
+                ),
+            );
+            return None;
+        }
         _ => {
             p.error_at(p.current_pos(), "expecting-ident", "Expecting identifier at ");
             return None;
@@ -692,6 +705,20 @@ pub fn parse_local_decl(p: &mut Parser) -> Option<Vec<VarDecl>> {
                 }
                 p.bump();
                 s
+            }
+            TokenKind::Ident(s) => {
+                // Ident IS a HolyC keyword (e.g. `end`, `start`,
+                // `case`). Specific message — see parse_global_decl
+                // for rationale.
+                p.error_at(
+                    dstart,
+                    "keyword-as-name",
+                    format!(
+                        "`{s}` is a HolyC keyword and can't be used as a \
+                         variable name; rename it"
+                    ),
+                );
+                return None;
             }
             _ => {
                 p.error_at(p.current_pos(), "expecting-ident", "Expecting identifier at ");

@@ -62,6 +62,24 @@ fn reserved_name_collision_inf_param() {
 }
 
 #[test]
+fn keyword_as_decl_name_global() {
+    let r = rules("I64 end = 42;");
+    assert!(r.contains(&"keyword-as-name"), "got {r:?}");
+}
+
+#[test]
+fn keyword_as_decl_name_local() {
+    let r = rules("U0 F() { I64 end = 42; }");
+    assert!(r.contains(&"keyword-as-name"), "got {r:?}");
+}
+
+#[test]
+fn keyword_as_function_name() {
+    let r = rules("U0 end() { Print(\"x\"); }");
+    assert!(r.contains(&"keyword-as-name"), "got {r:?}");
+}
+
+#[test]
 fn legitimate_use_of_pi_constant_does_not_collide() {
     // Reading `pi` inside a function body is fine — the rule only
     // fires when `pi` is used as a parameter or local NAME.
