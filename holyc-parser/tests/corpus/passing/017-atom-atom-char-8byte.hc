@@ -1,0 +1,1 @@
+U64 a_c8 = 'ABCDEFGH';

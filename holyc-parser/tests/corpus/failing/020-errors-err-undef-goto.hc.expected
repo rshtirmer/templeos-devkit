@@ -1,0 +1,2 @@
+COCDel COCCompile PrsFun PrsGlblVarLst ERROR: Undefined goto label EUG_nowhere
+&LexExcept COCDel COCCompile PrsFun ERROR: Undefined goto label at "T:0"

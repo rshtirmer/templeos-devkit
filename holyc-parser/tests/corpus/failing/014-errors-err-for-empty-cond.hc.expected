@@ -1,0 +1,2 @@
+&LexExcept PrsUnaryTerm PrsExpression2 PrsExpression ERROR: Missing expression at ";"  U0 EFC_f() { for (;;) ; }
+&LexExcept PrsExpression PrsFor PrsStmt ERROR: Compiler Parse Error at ";"  U0 EFC_f() { for (;;) ; }

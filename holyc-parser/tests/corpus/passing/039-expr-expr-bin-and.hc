@@ -1,0 +1,1 @@
+I64 e_band = 0xFF & 0x0F;

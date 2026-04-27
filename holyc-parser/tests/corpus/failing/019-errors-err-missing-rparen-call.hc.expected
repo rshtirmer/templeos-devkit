@@ -1,0 +1,2 @@
+&LexExcept PrsFunCall PrsUnaryTerm PrsExpression2 ERROR: Missing ')' at "T:0"  
+&LexExcept PrsExpression PrsStmt &LexStmt2Bin ERROR: Compiler Parse Error at "T:0"
