@@ -23,3 +23,6 @@ build/
 # Python bytecode
 __pycache__/
 *.pyc
+
+# Rust build output (holyc-parser/) — keep Cargo.lock since holycc is a bin
+target/

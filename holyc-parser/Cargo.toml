@@ -1,0 +1,19 @@
+[package]
+name = "holyc-parser"
+version = "0.1.0"
+edition = "2024"
+description = "Host-side HolyC lexer + parser + type checker. Translates the front-end of TempleOS's Compiler/ to Rust so most parser errors are caught before pushing to the VM."
+license = "Unlicense"
+publish = false
+
+[lib]
+name = "holyc_parser"
+path = "src/lib.rs"
+
+[[bin]]
+name = "holycc"
+path = "src/bin/holycc.rs"
+
+[dependencies]
+
+[dev-dependencies]
