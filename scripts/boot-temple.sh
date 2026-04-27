@@ -40,8 +40,17 @@ rm -f "$MON" "$COM2"
 # sequence and shouldn't be auto-driven.
 if [ "$AUTO_BOOT" = "1" ] && { [ "$MODE" = "disk" ] || [ "$MODE" = "dev" ]; }; then
   (
+    # Step 1: dismiss the bootloader Selection menu.
     sleep 4
     QEMU_SOCK="$MON" "$REPO/scripts/send.py" 1 --enter --delay 0.05 \
+      >/dev/null 2>&1 || true
+    # Step 2: dismiss "Take Tour (y or n)?" (TempleOS Once.HC). Prompt
+    # appears every boot — answering 'n' once does NOT persist on the
+    # 2017 distro. ~10s after step 1 is enough on TCG; ZealOS doesn't
+    # have this prompt and ignores the extra keystrokes harmlessly if
+    # this script is ever pointed at one.
+    sleep 10
+    QEMU_SOCK="$MON" "$REPO/scripts/send.py" n --enter --delay 0.05 \
       >/dev/null 2>&1 || true
   ) &
 fi
