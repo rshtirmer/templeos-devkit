@@ -1,200 +1,455 @@
 //! AST-level lint rules. Runs after parsing and (optionally) name
 //! resolution. Each rule walks the AST and emits diagnostics.
 //!
-//! Rules in this module are heuristic — they rely on syntactic
-//! patterns rather than full type information. If a check needs
-//! type information it belongs in a future `types` pass.
+//! This module is type-aware: it builds a `TypeContext` from the
+//! input modules (recording declared types for globals + tracking
+//! locals during the walk) so heuristics can ask "is this expression
+//! integer-typed?" without false-positiving on `I64`-typed locals.
 //!
-//! Currently shipped:
-//!   - `switch-case-shared-scope`  (warning)
-//!   - `f64-bitwise`               (warning)
+//! Rules currently shipped:
+//!   - `switch-case-shared-scope`  (warning) — pure structural
+//!   - `f64-bitwise`               (warning) — type-aware
+
+use std::collections::HashMap;
 
 use crate::diag::{Diag, Severity};
 use crate::parse::ast::{
-    BinOp, Expr, ExprKind, Module, Stmt, StmtKind, TopItem, VarDecl,
+    BinOp, Expr, ExprKind, Initializer, Module, Param, PpDirective, PrefixOp, PrimType,
+    Stmt, StmtKind, TopItem, TypeRef, VarDecl,
 };
 
-/// Lint a parsed module. Returns all rule diagnostics.
+// ============================================================
+// Public API
+// ============================================================
+
+/// Lint a single parsed module. Builds its own type context from
+/// just this module's globals — for cross-file type lookups (calls
+/// to functions defined in another module), use `lint_modules`.
 pub fn lint_module(file: &str, m: &Module) -> Vec<Diag> {
+    let pairs = vec![(file.to_string(), m.clone())];
+    lint_modules(&pairs)
+        .into_iter()
+        .filter(|d| d.file == file)
+        .collect()
+}
+
+/// Lint a group of modules together. Globals from every module are
+/// visible to every other module's lint pass — matches how the rest
+/// of `holycc lint` operates and removes false positives on
+/// cross-file function calls.
+pub fn lint_modules(modules: &[(String, Module)]) -> Vec<Diag> {
+    let mut tctx = TypeContext::new();
+    for (_, m) in modules {
+        tctx.register_module(m);
+    }
     let mut out = Vec::new();
-    for item in &m.items {
-        lint_top_item(file, item, &mut out);
+    for (file, m) in modules {
+        let mut walker = LintWalker::new(file, &tctx, &mut out);
+        walker.walk_module(m);
     }
     out
 }
 
-fn lint_top_item(file: &str, item: &TopItem, out: &mut Vec<Diag>) {
-    match item {
-        TopItem::Function(f) => {
-            if let Some(body) = &f.body {
-                for s in body {
-                    lint_stmt(file, s, out);
+// ============================================================
+// TypeContext — global symbol → type map
+// ============================================================
+
+/// A lightweight type table covering the kinds of declarations the
+/// lint pass needs to know about: function return types, variable
+/// types, and `#define` bodies that look like an integer literal.
+/// Class declarations are recorded by name (so we can spot user-
+/// defined types) but with no further info.
+pub struct TypeContext {
+    /// global name → declared type (where known)
+    globals: HashMap<String, TypeRef>,
+    /// declared user-defined classes / unions (name set)
+    classes: std::collections::HashSet<String>,
+}
+
+impl TypeContext {
+    pub fn new() -> Self {
+        Self {
+            globals: HashMap::new(),
+            classes: std::collections::HashSet::new(),
+        }
+    }
+
+    pub fn register_module(&mut self, m: &Module) {
+        for item in &m.items {
+            match item {
+                TopItem::Function(f) => {
+                    // Record the function's RETURN type as the type
+                    // of its name (close enough for "what does
+                    // calling this give me?").
+                    self.globals.insert(f.name.clone(), f.ret_type.clone());
                 }
-            }
-        }
-        TopItem::Variable(v) => lint_var_decl_init(file, v, out),
-        TopItem::GlobalDeclList(vs) => {
-            for v in vs {
-                lint_var_decl_init(file, v, out);
-            }
-        }
-        TopItem::Stmt(s) => lint_stmt(file, s, out),
-        TopItem::Class(_) | TopItem::Preprocessor(_) | TopItem::Asm(_) | TopItem::Empty => {}
-    }
-}
-
-fn lint_var_decl_init(file: &str, v: &VarDecl, out: &mut Vec<Diag>) {
-    if let Some(init) = &v.init {
-        lint_initializer(file, init, out);
-    }
-}
-
-fn lint_initializer(file: &str, init: &crate::parse::ast::Initializer, out: &mut Vec<Diag>) {
-    use crate::parse::ast::Initializer;
-    match init {
-        Initializer::Single(e) => lint_expr(file, e, out),
-        Initializer::Aggregate(items) => {
-            for i in items {
-                lint_initializer(file, i, out);
-            }
-        }
-    }
-}
-
-fn lint_stmt(file: &str, s: &Stmt, out: &mut Vec<Diag>) {
-    match &s.kind {
-        StmtKind::Empty | StmtKind::Break | StmtKind::Default
-        | StmtKind::SubSwitchStart | StmtKind::SubSwitchEnd
-        | StmtKind::Goto(_) | StmtKind::Label(_) | StmtKind::Asm(_)
-        | StmtKind::NoWarn(_) => {}
-        StmtKind::Block(body) => {
-            for s2 in body {
-                lint_stmt(file, s2, out);
-            }
-        }
-        StmtKind::Expr(e) => lint_expr(file, e, out),
-        StmtKind::If { cond, then_branch, else_branch } => {
-            lint_expr(file, cond, out);
-            lint_stmt(file, then_branch, out);
-            if let Some(eb) = else_branch {
-                lint_stmt(file, eb, out);
-            }
-        }
-        StmtKind::While { cond, body } | StmtKind::DoWhile { cond, body } => {
-            lint_expr(file, cond, out);
-            lint_stmt(file, body, out);
-        }
-        StmtKind::For { init, cond, update, body } => {
-            if let Some(i) = init { lint_stmt(file, i, out); }
-            if let Some(c) = cond { lint_expr(file, c, out); }
-            if let Some(u) = update { lint_expr(file, u, out); }
-            lint_stmt(file, body, out);
-        }
-        StmtKind::Switch { scrutinee, body, .. } => {
-            lint_expr(file, scrutinee, out);
-            // Per-rule: walk the switch body for patterns that
-            // depend on switch context.
-            check_switch_case_shared_scope(file, body, out);
-            for s2 in body {
-                lint_stmt(file, s2, out);
-            }
-        }
-        StmtKind::Return(opt) => {
-            if let Some(e) = opt { lint_expr(file, e, out); }
-        }
-        StmtKind::Try { body, catch_body } => {
-            for s2 in body { lint_stmt(file, s2, out); }
-            for s2 in catch_body { lint_stmt(file, s2, out); }
-        }
-        StmtKind::Lock(inner) => lint_stmt(file, inner, out),
-        StmtKind::LocalDecl(vs) => {
-            for v in vs {
-                lint_var_decl_init(file, v, out);
-            }
-        }
-        StmtKind::Case(values) => {
-            use crate::parse::ast::CaseValue;
-            for v in values {
-                match v {
-                    CaseValue::Single(e) => lint_expr(file, e, out),
-                    CaseValue::Range(a, b) => {
-                        lint_expr(file, a, out);
-                        lint_expr(file, b, out);
+                TopItem::Variable(v) => {
+                    self.globals.insert(v.name.clone(), v.ty.clone());
+                }
+                TopItem::GlobalDeclList(vs) => {
+                    for v in vs {
+                        self.globals.insert(v.name.clone(), v.ty.clone());
                     }
-                    CaseValue::AutoIncrement => {}
+                }
+                TopItem::Class(c) => {
+                    self.classes.insert(c.name.clone());
+                }
+                TopItem::Preprocessor(PpDirective::Define { name, body }) => {
+                    if let Some(ty) = parse_define_body_type(body) {
+                        self.globals.insert(name.clone(), ty);
+                    }
+                }
+                TopItem::Stmt(_)
+                | TopItem::Asm(_)
+                | TopItem::Empty
+                | TopItem::Preprocessor(_) => {}
+            }
+        }
+    }
+
+    fn type_of(&self, name: &str) -> Option<&TypeRef> {
+        self.globals.get(name)
+    }
+}
+
+/// Inspect a `#define` body string and return a type if it's a
+/// single integer literal (decimal, hex, binary, optional sign).
+/// Anything else returns None.
+fn parse_define_body_type(body: &str) -> Option<TypeRef> {
+    let s = body.trim();
+    if s.is_empty() {
+        return None;
+    }
+    let (negated, rest) = if let Some(stripped) = s.strip_prefix('-') {
+        (true, stripped.trim_start())
+    } else if let Some(stripped) = s.strip_prefix('+') {
+        (false, stripped.trim_start())
+    } else {
+        (false, s)
+    };
+    let _ = negated;
+    let is_int = if let Some(hex) = rest.strip_prefix("0x").or_else(|| rest.strip_prefix("0X")) {
+        !hex.is_empty() && hex.chars().all(|c| c.is_ascii_hexdigit())
+    } else if let Some(bin) = rest.strip_prefix("0b").or_else(|| rest.strip_prefix("0B")) {
+        !bin.is_empty() && bin.chars().all(|c| c == '0' || c == '1')
+    } else {
+        !rest.is_empty() && rest.chars().all(|c| c.is_ascii_digit())
+    };
+    if is_int {
+        Some(TypeRef::Prim { ty: PrimType::I64, pointer_depth: 0 })
+    } else {
+        None
+    }
+}
+
+// ============================================================
+// LintWalker — walks a single module with a local-scope stack
+// ============================================================
+
+struct LintWalker<'a> {
+    file: &'a str,
+    tctx: &'a TypeContext,
+    out: &'a mut Vec<Diag>,
+    /// Stack of nested scopes. Each scope holds local-name → type.
+    /// The walker pushes on function entry, pops on function exit;
+    /// locals declared mid-function are added to the top of stack.
+    locals: Vec<HashMap<String, TypeRef>>,
+}
+
+impl<'a> LintWalker<'a> {
+    fn new(file: &'a str, tctx: &'a TypeContext, out: &'a mut Vec<Diag>) -> Self {
+        Self { file, tctx, out, locals: Vec::new() }
+    }
+
+    fn enter_scope(&mut self) {
+        self.locals.push(HashMap::new());
+    }
+
+    fn leave_scope(&mut self) {
+        self.locals.pop();
+    }
+
+    fn add_local(&mut self, name: &str, ty: &TypeRef) {
+        if let Some(top) = self.locals.last_mut() {
+            top.insert(name.to_string(), ty.clone());
+        }
+    }
+
+    fn lookup_local(&self, name: &str) -> Option<&TypeRef> {
+        for scope in self.locals.iter().rev() {
+            if let Some(ty) = scope.get(name) {
+                return Some(ty);
+            }
+        }
+        None
+    }
+
+    fn type_of(&self, name: &str) -> Option<&TypeRef> {
+        self.lookup_local(name).or_else(|| self.tctx.type_of(name))
+    }
+
+    fn walk_module(&mut self, m: &Module) {
+        for item in &m.items {
+            self.walk_top_item(item);
+        }
+    }
+
+    fn walk_top_item(&mut self, item: &TopItem) {
+        match item {
+            TopItem::Function(f) => {
+                self.enter_scope();
+                for p in &f.params {
+                    self.add_param(p);
+                }
+                if let Some(body) = &f.body {
+                    for s in body {
+                        self.walk_stmt(s);
+                    }
+                }
+                self.leave_scope();
+            }
+            TopItem::Variable(v) => self.walk_var_decl_init(v),
+            TopItem::GlobalDeclList(vs) => {
+                for v in vs {
+                    self.walk_var_decl_init(v);
                 }
             }
+            TopItem::Stmt(s) => {
+                // Top-level statements run during ExePutS — they have
+                // their own implicit scope.
+                self.enter_scope();
+                self.walk_stmt(s);
+                self.leave_scope();
+            }
+            TopItem::Class(_) | TopItem::Preprocessor(_) | TopItem::Asm(_) | TopItem::Empty => {}
+        }
+    }
+
+    fn add_param(&mut self, p: &Param) {
+        if p.variadic {
+            return;
+        }
+        if let Some(name) = &p.name {
+            self.add_local(name, &p.ty);
+        }
+    }
+
+    fn walk_var_decl_init(&mut self, v: &VarDecl) {
+        if let Some(init) = &v.init {
+            self.walk_initializer(init);
+        }
+    }
+
+    fn walk_initializer(&mut self, init: &Initializer) {
+        match init {
+            Initializer::Single(e) => self.walk_expr(e),
+            Initializer::Aggregate(items) => {
+                for i in items {
+                    self.walk_initializer(i);
+                }
+            }
+        }
+    }
+
+    fn walk_stmt(&mut self, s: &Stmt) {
+        match &s.kind {
+            StmtKind::Empty | StmtKind::Break | StmtKind::Default
+            | StmtKind::SubSwitchStart | StmtKind::SubSwitchEnd
+            | StmtKind::Goto(_) | StmtKind::Label(_) | StmtKind::Asm(_)
+            | StmtKind::NoWarn(_) => {}
+            StmtKind::Block(body) => {
+                self.enter_scope();
+                for s2 in body {
+                    self.walk_stmt(s2);
+                }
+                self.leave_scope();
+            }
+            StmtKind::Expr(e) => self.walk_expr(e),
+            StmtKind::If { cond, then_branch, else_branch } => {
+                self.walk_expr(cond);
+                self.walk_stmt(then_branch);
+                if let Some(eb) = else_branch {
+                    self.walk_stmt(eb);
+                }
+            }
+            StmtKind::While { cond, body } | StmtKind::DoWhile { cond, body } => {
+                self.walk_expr(cond);
+                self.walk_stmt(body);
+            }
+            StmtKind::For { init, cond, update, body } => {
+                self.enter_scope();
+                if let Some(i) = init { self.walk_stmt(i); }
+                if let Some(c) = cond { self.walk_expr(c); }
+                if let Some(u) = update { self.walk_expr(u); }
+                self.walk_stmt(body);
+                self.leave_scope();
+            }
+            StmtKind::Switch { scrutinee, body, .. } => {
+                self.walk_expr(scrutinee);
+                check_switch_case_shared_scope(self.file, body, self.out);
+                for s2 in body {
+                    self.walk_stmt(s2);
+                }
+            }
+            StmtKind::Return(opt) => {
+                if let Some(e) = opt { self.walk_expr(e); }
+            }
+            StmtKind::Try { body, catch_body } => {
+                self.enter_scope();
+                for s2 in body { self.walk_stmt(s2); }
+                self.leave_scope();
+                self.enter_scope();
+                for s2 in catch_body { self.walk_stmt(s2); }
+                self.leave_scope();
+            }
+            StmtKind::Lock(inner) => self.walk_stmt(inner),
+            StmtKind::LocalDecl(vs) => {
+                for v in vs {
+                    self.walk_var_decl_init(v);
+                    self.add_local(&v.name, &v.ty);
+                }
+            }
+            StmtKind::Case(values) => {
+                use crate::parse::ast::CaseValue;
+                for v in values {
+                    match v {
+                        CaseValue::Single(e) => self.walk_expr(e),
+                        CaseValue::Range(a, b) => {
+                            self.walk_expr(a);
+                            self.walk_expr(b);
+                        }
+                        CaseValue::AutoIncrement => {}
+                    }
+                }
+            }
+        }
+    }
+
+    fn walk_expr(&mut self, e: &Expr) {
+        match &e.kind {
+            ExprKind::IntLit(_) | ExprKind::FloatLit(_) | ExprKind::CharLit(_)
+            | ExprKind::StrLit(_) | ExprKind::Ident(_) | ExprKind::DolDol => {}
+            ExprKind::Prefix(_, x) | ExprKind::Postfix(_, x) | ExprKind::Paren(x)
+            | ExprKind::HolycCast(x, _) => self.walk_expr(x),
+            ExprKind::Binary(op, l, r) => {
+                if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
+                    if !self.looks_integer(l) && !self.looks_integer(r) {
+                        self.out.push(Diag {
+                            file: self.file.to_string(),
+                            line: e.span.0.line,
+                            col: e.span.0.col,
+                            severity: Severity::Warning,
+                            rule: "f64-bitwise",
+                            message: format!(
+                                "bitwise `{}` between non-integer-typed operands; \
+                                 HolyC's bitwise ops act on IEEE-754 bit patterns \
+                                 when operands are F64. Cast each side to I64 if \
+                                 you mean integer truncation",
+                                op_name(*op)
+                            ),
+                        });
+                    }
+                }
+                self.walk_expr(l);
+                self.walk_expr(r);
+            }
+            ExprKind::Index(a, b) => {
+                self.walk_expr(a);
+                self.walk_expr(b);
+            }
+            ExprKind::Member(x, _) | ExprKind::Arrow(x, _) => self.walk_expr(x),
+            ExprKind::Call(callee, args) => {
+                self.walk_expr(callee);
+                for a in args { self.walk_expr(a); }
+            }
+            ExprKind::Sizeof(_) | ExprKind::OffsetOf(_) | ExprKind::Defined(_) => {}
+            ExprKind::Comma(items) => {
+                for x in items { self.walk_expr(x); }
+            }
+        }
+    }
+
+    /// Type-aware check: is `e` an expression whose value is
+    /// definitely an integer? Returns true if syntactic shape says
+    /// integer, OR if the expression refers to a name whose declared
+    /// type is an integer primitive.
+    fn looks_integer(&self, e: &Expr) -> bool {
+        looks_integer_shape(e) || self.looks_integer_via_types(e)
+    }
+
+    fn looks_integer_via_types(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::Ident(name) => self
+                .type_of(name)
+                .map(is_integer_type)
+                .unwrap_or(false),
+            ExprKind::Call(callee, _) => {
+                // Resolve the callee name (only handle direct calls,
+                // i.e. `Ident(args)`). Function-pointer calls fall
+                // back to syntactic shape.
+                if let ExprKind::Ident(name) = &callee.kind {
+                    self.type_of(name).map(is_integer_type).unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            ExprKind::Paren(inner) => self.looks_integer(inner),
+            ExprKind::Index(arr, _) => {
+                // arr[i] of an integer-element array → integer.
+                // We model this by inspecting the array's declared type.
+                if let ExprKind::Ident(name) = &arr.kind {
+                    self.type_of(name).map(is_integer_type).unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            // Member / Arrow: would need class field types. Skip.
+            _ => false,
         }
     }
 }
 
-fn lint_expr(file: &str, e: &Expr, out: &mut Vec<Diag>) {
+// ============================================================
+// Pure syntactic shape checks (no types needed)
+// ============================================================
+
+fn looks_integer_shape(e: &Expr) -> bool {
     match &e.kind {
-        ExprKind::IntLit(_) | ExprKind::FloatLit(_) | ExprKind::CharLit(_)
-        | ExprKind::StrLit(_) | ExprKind::Ident(_) | ExprKind::DolDol => {}
-        ExprKind::Prefix(_, x) | ExprKind::Postfix(_, x) | ExprKind::Paren(x)
-        | ExprKind::HolycCast(x, _) => lint_expr(file, x, out),
-        ExprKind::Binary(op, l, r) => {
-            // ---- Rule: f64-bitwise (warning, heuristic) ----
-            //
-            // `&` / `|` / `^` between two operands that aren't
-            // syntactically integer-shaped. In HolyC, bitwise ops on
-            // F64 act on the IEEE-754 bit pattern — almost always a
-            // porting bug from C. The fix is to truncate to I64 first
-            // (assignment to I64 local, postfix `(I64)` cast, or
-            // explicit constant).
-            //
-            // Heuristic: this rule fires when neither operand looks
-            // integer-shaped. With no type information from the
-            // parser, bare `Ident`s and direct function calls always
-            // look "non-integer-shaped" — even when the variable was
-            // declared `I64 x;` or the function returns I64. Those
-            // are FALSE POSITIVES; the user should read the warning
-            // and silence by adding an explicit `(I64)` cast on at
-            // least one side, or wait for the type pass to land.
-            //
-            // We accept the noise because the cost of MISSING a
-            // genuine F64-bitwise bug (silent miscomputation) is
-            // higher than the cost of a one-line cast added to a
-            // legitimate integer expression.
-            if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                // Warn only when NEITHER side is integer-shaped —
-                // `x & 0xFF` (one literal) or `(I64)x & y` (one cast)
-                // is the common idiom and shouldn't fire.
-                if !looks_integer_shaped(l) && !looks_integer_shaped(r) {
-                    out.push(Diag {
-                        file: file.to_string(),
-                        line: e.span.0.line,
-                        col: e.span.0.col,
-                        severity: Severity::Warning,
-                        rule: "f64-bitwise",
-                        message: format!(
-                            "bitwise `{}` between non-integer-shaped operands; \
-                             HolyC's bitwise ops act on IEEE-754 bit patterns \
-                             when operands are F64. Cast each side to I64 if \
-                             you mean integer truncation",
-                            op_name(*op)
-                        ),
-                    });
-                }
-            }
-            lint_expr(file, l, out);
-            lint_expr(file, r, out);
-        }
-        ExprKind::Index(a, b) => {
-            lint_expr(file, a, out);
-            lint_expr(file, b, out);
-        }
-        ExprKind::Member(x, _) | ExprKind::Arrow(x, _) => lint_expr(file, x, out),
-        ExprKind::Call(callee, args) => {
-            lint_expr(file, callee, out);
-            for a in args { lint_expr(file, a, out); }
-        }
-        ExprKind::Sizeof(_) | ExprKind::OffsetOf(_) | ExprKind::Defined(_) => {}
-        ExprKind::Comma(items) => {
-            for x in items { lint_expr(file, x, out); }
-        }
+        ExprKind::IntLit(_) | ExprKind::CharLit(_) => true,
+        ExprKind::HolycCast(_, ty) => is_integer_type(ty),
+        ExprKind::Prefix(PrefixOp::BitNot, _) => true,
+        ExprKind::Prefix(PrefixOp::Minus | PrefixOp::Plus, inner) => matches!(
+            inner.kind,
+            ExprKind::IntLit(_) | ExprKind::CharLit(_)
+        ),
+        ExprKind::Binary(
+            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr,
+            _,
+            _,
+        ) => true,
+        ExprKind::Paren(inner) => looks_integer_shape(inner),
+        _ => false,
     }
+}
+
+fn is_integer_type(ty: &TypeRef) -> bool {
+    matches!(
+        ty,
+        TypeRef::Prim {
+            ty: PrimType::U0
+            | PrimType::I0
+            | PrimType::U8
+            | PrimType::I8
+            | PrimType::Bool
+            | PrimType::U16
+            | PrimType::I16
+            | PrimType::U32
+            | PrimType::I32
+            | PrimType::U64
+            | PrimType::I64,
+            ..
+        }
+    )
 }
 
 fn op_name(op: BinOp) -> &'static str {
@@ -206,66 +461,11 @@ fn op_name(op: BinOp) -> &'static str {
     }
 }
 
-/// Heuristic: an expression "looks integer-shaped" if it's a
-/// literal, an int-cast, a bitwise / shift result, a `~` unary, a
-/// signed integer literal (`-256`), or any of the above wrapped in
-/// parens. We can't see static types from the AST, so calls to
-/// integer-returning functions still false-positive — those need
-/// the type pass.
-fn looks_integer_shaped(e: &Expr) -> bool {
-    use crate::parse::ast::{PrefixOp, PrimType, TypeRef};
-    match &e.kind {
-        ExprKind::IntLit(_) | ExprKind::CharLit(_) => true,
-        ExprKind::HolycCast(_, ty) => matches!(
-            ty,
-            TypeRef::Prim {
-                ty: PrimType::U0
-                | PrimType::I0
-                | PrimType::U8
-                | PrimType::I8
-                | PrimType::Bool
-                | PrimType::U16
-                | PrimType::I16
-                | PrimType::U32
-                | PrimType::I32
-                | PrimType::U64
-                | PrimType::I64,
-                ..
-            }
-        ),
-        ExprKind::Prefix(PrefixOp::BitNot, _) => true,
-        // `-256` and `+42` — signed integer literals.
-        ExprKind::Prefix(PrefixOp::Minus | PrefixOp::Plus, inner) => {
-            matches!(inner.kind, ExprKind::IntLit(_) | ExprKind::CharLit(_))
-        }
-        // Bitwise and shift results are always integer.
-        ExprKind::Binary(
-            BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor | BinOp::Shl | BinOp::Shr,
-            _,
-            _,
-        ) => true,
-        ExprKind::Paren(inner) => looks_integer_shaped(inner),
-        _ => false,
-    }
-}
-
 // ============================================================
-// Rule: switch-case-shared-scope
+// switch-case-shared-scope (no type info needed)
 // ============================================================
-//
-// HolyC's `switch { case A: { ... } case B: { ... } }` shares the
-// outer switch scope across case arms — declaring a local of the
-// same name in two arms is rejected by PrsType as "Duplicate
-// member". The fix is to hoist the declaration above the switch
-// or rename per case. This rule walks a switch body, tracks
-// LocalDecl names per case arm, and warns on collisions.
 
 fn check_switch_case_shared_scope(file: &str, body: &[Stmt], out: &mut Vec<Diag>) {
-    // The body is a flat sequence — Case markers split the arms.
-    // Within each arm we collect VarDecl names. After the arm ends
-    // (next Case / Default / SubSwitchEnd / end of body), compare
-    // against the running global "ever-declared in this switch" set.
-    use std::collections::HashMap;
     let mut seen: HashMap<String, (u32, u32)> = HashMap::new();
     let mut current_arm: Vec<(String, u32, u32)> = Vec::new();
 
@@ -295,8 +495,7 @@ fn check_switch_case_shared_scope(file: &str, body: &[Stmt], out: &mut Vec<Diag>
         }
     };
 
-    let mut iter = body.iter().peekable();
-    while let Some(s) = iter.next() {
+    for s in body {
         match &s.kind {
             StmtKind::Case(_) | StmtKind::Default | StmtKind::SubSwitchStart | StmtKind::SubSwitchEnd => {
                 let mut arm = current_arm.split_off(0);
@@ -308,7 +507,6 @@ fn check_switch_case_shared_scope(file: &str, body: &[Stmt], out: &mut Vec<Diag>
                 }
             }
             StmtKind::Block(inner) => {
-                // Walk into nested blocks within the same case arm.
                 collect_decls(inner, &mut current_arm);
             }
             _ => {}
