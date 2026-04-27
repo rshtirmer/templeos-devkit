@@ -54,16 +54,18 @@ BOOTSTRAP_CMDS = [
     # writing `Comm.HC` literally would look for an uncompressed file
     # that doesn't exist on the install.
     '#include "::/Doc/Comm";',
-    'U8 *Db=MAlloc(131072);I64 Di=0;U8 Dc;',
+    # `_D_exit` is the escape hatch: a pushed chunk doing `_D_exit=TRUE;`
+    # breaks D() out of its receive loop, returning adam to its REPL so
+    # follow-up code (e.g. an interactive viewer) can take over the
+    # window. See --launch.
+    'U8 *Db=MAlloc(131072);I64 Di=0;U8 Dc;Bool _D_exit=FALSE;',
     'CommInit8n1(2,115200);CommInit8n1(1,115200);'
     'FifoU8Del(comm_ports[2].RX_fifo);'
     'comm_ports[2].RX_fifo=FifoU8New(131072);',
     # Receive function — runs in adam_task directly (no Spawn). Why not
-    # Spawn: spawned tasks get a fresh JIT compile context that doesn't
-    # see adam's #include'd symbols (CommPrint, FifoU8Rem, comm_ports)
-    # via the hash_table->next chain in practice. Running in adam means
-    # adam's REPL blocks forever, but we don't need the REPL once the
-    # daemon is up — every push goes via COM2.
+    # Spawn: spawned tasks' JIT compile context doesn't reliably resolve
+    # adam's ExePutS'd symbols via the hash_table->next chain. Running
+    # in adam means we own adam's window when D() exits.
     #
     # Uses ExePutS — JIT-compiles the buffer in memory, no disk write/
     # read. FileWrite+ExeFile (earlier approach) churned the RedSea FS
@@ -72,12 +74,13 @@ BOOTSTRAP_CMDS = [
     # NOTE: original TempleOS uses FifoU8Rem (ZealOS renamed it).
     'U0 D(){'
     'CommPrint(1,"D_OK\\n");'
-    'while(1){if(FifoU8Rem(comm_ports[2].RX_fifo,&Dc)){'
+    'while(!_D_exit){if(FifoU8Rem(comm_ports[2].RX_fifo,&Dc)){'
     'if(Dc==4){Db[Di]=0;ExePutS(Db);'
     'CommPrint(1,"D_DONE\\n");Di=0;}'
-    'else if(Di<131071){Db[Di++]=Dc;}}else Sleep(10);}}',
-    # Call D directly. Adam's REPL blocks here forever — that's fine,
-    # everything from now on goes via COM2.
+    'else if(Di<131071){Db[Di++]=Dc;}}else Sleep(10);}'
+    'CommPrint(1,"D_EXIT\\n");}',
+    # Call D directly — adam blocks in this loop until a pushed chunk
+    # sets _D_exit=TRUE.
     'D();',
 ]
 
@@ -135,6 +138,44 @@ def _strip_shuttle_includes(body: bytes) -> bytes:
     )
 
 
+# Compat substitutions: ZealOS renamed a handful of TempleOS APIs and
+# globals. We do plain text replacement on the host before push. Tried
+# HolyC `#define`s first — works in tiny test chunks but mysteriously
+# fails to expand inside larger source files. Substitution sidesteps
+# the problem entirely.
+COMPAT_SUBS = [
+    # ZealOS name → TempleOS name.
+    # `MessageGet` is the blocking message wait; TempleOS calls it `GetMsg`.
+    (b"MessageGet",            b"GetMsg"),
+    (b"MESSAGE_KEY_DOWN",      b"MSG_KEY_DOWN"),
+    (b"MESSAGE_KEY_UP",        b"MSG_KEY_UP"),
+    (b"WIG_USER_TASK_DEFAULT", b"WIG_USER_TASK_DFT"),
+    # `mouse` is the ZealOS mouse global; TempleOS calls it `ms`. We
+    # match common field-access patterns rather than the bare token to
+    # avoid colliding with identifiers that happen to contain "mouse".
+    (b"mouse.",                b"ms."),
+    (b"mouse,",                b"ms,"),
+    (b"mouse)",                b"ms)"),
+    (b"mouse;",                b"ms;"),
+    # `tS` is ZealOS's F64 seconds-since-boot global. TempleOS doesn't
+    # have it; the standard substitute is `cnts.jiffies(F64) / 1000.0`.
+    (b" tS ",                  b" (cnts.jiffies(F64)/1000.0) "),
+    (b" tS;",                  b" (cnts.jiffies(F64)/1000.0);"),
+    (b"=tS",                   b"=(cnts.jiffies(F64)/1000.0)"),
+    (b"= tS",                  b"= (cnts.jiffies(F64)/1000.0)"),
+    (b"-tS",                   b"-(cnts.jiffies(F64)/1000.0)"),
+    (b"- tS",                  b"- (cnts.jiffies(F64)/1000.0)"),
+]
+
+
+def _prep(body: bytes) -> bytes:
+    """Apply ZealOS-→TempleOS compat subs and strip shuttle includes."""
+    body = _strip_shuttle_includes(body)
+    for src, dst in COMPAT_SUBS:
+        body = body.replace(src, dst)
+    return body
+
+
 def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
     since = log_size()
     push_chunk(payload)
@@ -160,6 +201,15 @@ def main():
     ap.add_argument("--order", default="",
                     help="comma-separated src push order if alphabetical "
                          "doesn't satisfy deps (e.g. Wavefunc.ZC,Orbital.ZC)")
+    ap.add_argument("--launch", nargs="?", const="", default=None,
+                    metavar="CMD",
+                    help="push src files (skip tests) then exit the daemon "
+                         "and sendkey CMD into adam's REPL. With no CMD, "
+                         "just exits the daemon and leaves adam at its "
+                         "prompt for manual driving. Use this to take over "
+                         "adam's window with an interactive viewer like "
+                         "an editor or a custom tool — the spawned-task "
+                         "hash-chain workaround.")
     args = ap.parse_args()
 
     if not COM2.exists() or not MON.exists():
@@ -197,23 +247,44 @@ def main():
     else:
         src_files = [f for f in sorted(src_dir.glob("*.ZC"))
                      if f.name not in skip]
-    src_files.append(test_dir / "Assert.ZC")
+    if args.launch is None:
+        src_files.append(test_dir / "Assert.ZC")
     test_files = [f for f in sorted(test_dir.glob("T_*.ZC"))
                   if not args.filter or args.filter in f.name]
 
-    # Phase 1: source + Assert. Each is JIT-compiled; defs persist.
+    # Phase 1: source + (optionally) Assert. Each is JIT-compiled.
     print(f"==> phase 1: pushing {len(src_files)} source files")
     for f in src_files:
-        if not push_and_wait(_strip_shuttle_includes(f.read_bytes()),
+        if not push_and_wait(_prep(f.read_bytes()),
                              f.name, timeout=60.0):
             sys.exit(1)
+
+    if args.launch is not None:
+        # Two steps: (1) tell D() to exit so adam returns to its REPL;
+        # (2) optionally sendkey CMD into adam's prompt. Whatever CMD
+        # invokes will own adam's window with full WM chrome (resize,
+        # drag, [X]) — the standard TempleOS user-task experience.
+        print("==> stopping daemon (_D_exit = TRUE)")
+        since = log_size()
+        push_chunk(b'_D_exit=TRUE;')
+        ok, _ = wait_for("D_EXIT", since=since, timeout=10.0)
+        if not ok:
+            print("!! D_EXIT not seen — adam may still be in D() loop",
+                  file=sys.stderr)
+        if args.launch:
+            print(f"==> sendkey: {args.launch!r}")
+            sendkey(args.launch, enter=True, delay=0.05)
+            print("==> command sent — adam now owns the foreground task")
+        else:
+            print("==> daemon stopped; adam back at REPL for manual driving")
+        return
 
     # Phase 2: TEST_RUN_BEGIN marker, then each test (top-level
     # PASS/ASSERT_EQ runs on push), then TEST_SUMMARY + TEST_RUN_END.
     print(f"==> phase 2: TEST_RUN_BEGIN + {len(test_files)} tests")
     push_and_wait(b'CommPrint(1,"TEST_RUN_BEGIN\\n");', "begin-marker", 10.0)
     for f in test_files:
-        if not push_and_wait(_strip_shuttle_includes(f.read_bytes()),
+        if not push_and_wait(_prep(f.read_bytes()),
                              f.name, timeout=60.0):
             sys.exit(1)
     boot = (

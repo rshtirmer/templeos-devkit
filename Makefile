@@ -1,5 +1,5 @@
 .PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help \
-	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple
+	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple launch-temple
 
 # ---- Original TempleOS (Terry's 2017 Distro) — side-by-side compat target ----
 # No shuttle / FAT image / payload disk: the host pushes the entire test
@@ -33,6 +33,17 @@ dev-temple: $(TEMPLE_DISK)
 # 'n', then run this). Use T= to filter test files.
 test-temple:
 	T="$(T)" python3 scripts/temple-run.py --filter="$(T)"
+
+# Push src files (skip tests), exit the daemon, and sendkey CMD into
+# adam's REPL — adam now owns the foreground task. Pattern for taking
+# over the WM tile with an interactive viewer your fork ships in
+# src/. Pass CMD as a HolyC statement; with empty CMD just leaves
+# adam at its prompt for manual driving.
+#
+#   make launch-temple CMD='YourViewer(2,8000);'
+#   make launch-temple              # no command — manual REPL drive
+launch-temple:
+	python3 scripts/temple-run.py --launch="$(CMD)"
 
 
 ZEALOS_URL := https://github.com/Zeal-Operating-System/ZealOS/releases/download/latest/ZealOS-PublicDomain-BIOS-2025-11-10-02_56_42.iso
