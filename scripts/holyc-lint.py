@@ -513,6 +513,41 @@ def lint(path: str, src: str) -> list[Diag]:
                  "HolyC has no F32 type — use F64",
                  "f32-reference")
 
+    # --- reserved-name parameter collisions -----------------------------
+    # Names like `eps`, `pi`, `inf`, `nan` are TempleOS compile-time F64
+    # constants installed in the kernel symbol table. Used as parameter
+    # names they get resolved to the constant value DURING PrsType, so
+    # the parser sees an INT in a position expecting `*` and trips
+    # with: "Expecting '*' at INT:<bits>". Diagnosed in temple-quake's
+    # Phase-1 mathlib port (see CLAUDE.md). Catch the common ones at
+    # parameter-list and local-decl positions.
+    #
+    # Match: TYPE_KW [`*` …] NAME — when NAME is a reserved word.
+    _RESERVED_NAMES = {
+        "eps", "pi", "inf", "nan",   # F64 constants
+        "tS",                          # ZealOS only — but harmless to flag
+        "ms",                          # mouse global
+    }
+    _PARAM_DECL_RE = re.compile(
+        r"\b("
+        r"U0|I0|U8|I8|Bool|U16|I16|U32|I32|U64|I64|F64"
+        r")\b\s*\**\s*([A-Za-z_][A-Za-z0-9_]*)"
+    )
+    for ln_idx, ln in enumerate(src.split("\n")):
+        lineno = ln_idx + 1
+        # strip line comments
+        cidx = ln.find("//")
+        code_part = ln if cidx < 0 else ln[:cidx]
+        for m in _PARAM_DECL_RE.finditer(code_part):
+            name = m.group(2)
+            if name in _RESERVED_NAMES:
+                push("error", lineno, m.start(2) + 1,
+                     f"`{name}` is a TempleOS reserved compile-time constant; "
+                     f"using it as a parameter / local name causes PrsType to "
+                     f"resolve it to the constant value (e.g. eps = 2.22e-16) "
+                     f"and trip 'Expecting *'. Rename to `tol`/`epsilon`/etc.",
+                     "reserved-name-collision")
+
     # --- per-line lints ------------------------------------------------
     for ln_idx, ln in enumerate(src.split("\n")):
         if "\t" in ln:
