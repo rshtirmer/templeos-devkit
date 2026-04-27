@@ -93,8 +93,7 @@ chain.
 
 - Disk image: `vendor/templeos/disk.qcow2`
   - md5: `ca6c7ce361ef5a186531c66e33effb48`
-  - Source: copied from `temple-quake/devkit/vendor/templeos/disk.qcow2`,
-    a fresh install of Terry's 2017 distro from
+  - Source: a fresh install of Terry's 2017 distro from
     https://templeos.org/Downloads/TempleOS.ISO performed in early 2026.
   - On-disk OS: `TempleOS V5.03` (visible in the boot screen banner).
 - Devkit branch the corpus was validated against:

@@ -33,11 +33,12 @@ fn parse_statement_inner(p: &mut Parser, at_file_scope: bool) -> Option<Stmt> {
         TokenKind::Ident(name) => match lookup_keyword(&name) {
             Some(kw) => parse_keyword_stmt(p, kw, at_file_scope, start),
             None => {
-                // Could be: label `IDENT :`, local decl (named class —
-                // we don't have a symbol table so assume not a class
-                // here), or expression-statement.
+                // Could be: label `IDENT :`, local decl with named-
+                // class type (e.g. `cvar_t *var;`), or expression-stmt.
                 if matches!(p.peek_at(1), TokenKind::Colon) {
                     parse_label_stmt(p, name, at_file_scope, start)
+                } else if looks_like_named_type_local_decl(p) {
+                    parse_local_decl_stmt(p, at_file_scope, start)
                 } else {
                     parse_expr_stmt(p, start)
                 }
@@ -109,6 +110,20 @@ fn parse_implicit_print_stmt(p: &mut Parser, start: crate::lex::Pos) -> Option<S
         Expr { kind: ExprKind::Comma(args), span: (start, p.current_pos()) }
     };
     Some(Stmt { kind: StmtKind::Expr(expr), span: (start, p.current_pos()) })
+}
+
+/// `IDENT *... IDENT` at function-scope start of statement looks
+/// like a local decl whose type is a user-defined class. Mirrors
+/// `decl::looks_like_named_type_decl`.
+fn looks_like_named_type_local_decl(p: &Parser) -> bool {
+    let mut offset = 1usize;
+    while matches!(p.peek_at(offset), TokenKind::Star) {
+        offset += 1;
+    }
+    if let TokenKind::Ident(s) = p.peek_at(offset) {
+        return lookup_keyword(s).is_none();
+    }
+    false
 }
 
 fn parse_label_stmt(

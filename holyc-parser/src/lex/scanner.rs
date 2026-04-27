@@ -321,7 +321,7 @@ impl<'src> Scanner<'src> {
     /// goes through `Pow10I64(neg)` which doesn't exist. We compute
     /// f64::powi normally so callers see a usable value, but flag the
     /// negative-exponent case as a parser-level error since it tripped
-    /// the live VM (our actual experience porting mathlib).
+    /// the live VM during experimentation.
     fn scan_float_exponent(&mut self, start: Pos, i: i64, k: i32) -> TokenKind {
         self.bump(); // consume e/E
         let neg = match self.peek() {

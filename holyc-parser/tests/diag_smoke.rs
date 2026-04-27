@@ -8,7 +8,7 @@ fn diag_format_matches_holyc_lint_py_output() {
     // Our Display impl must match so consumers (make lint, editors) can
     // parse both linters' output uniformly.
     let d = Diag {
-        file: "src/QuakeMath.ZC".into(),
+        file: "src/Demo.HC".into(),
         line: 42,
         col: 7,
         severity: Severity::Error,
@@ -17,7 +17,7 @@ fn diag_format_matches_holyc_lint_py_output() {
     };
     assert_eq!(
         format!("{d}"),
-        "src/QuakeMath.ZC:42:7: error: split into separate declarations [comma-decl-list]"
+        "src/Demo.HC:42:7: error: split into separate declarations [comma-decl-list]"
     );
 }
 
