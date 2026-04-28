@@ -1,4 +1,5 @@
-//! AST-level lint rules: switch-case-shared-scope and f64-bitwise.
+//! AST-level lint rules: switch-case-shared-scope, block-shared-scope,
+//! and f64-bitwise.
 
 use holyc_parser::diag::Severity;
 use holyc_parser::lint::lint_module;
@@ -86,6 +87,180 @@ U0 F(I64 op) {
     assert!(
         !r.iter().any(|s| *s == "switch-case-shared-scope"),
         "false positive when var hoisted: {r:?}"
+    );
+}
+
+// ---------- block-shared-scope ----------
+
+#[test]
+fn block_shared_scope_two_sibling_ifs_flagged() {
+    // The `_PR_PF_setsize` reproducer from temple-quake: two `if`s
+    // at the same function scope each declare `I64 b`. PrsType errors
+    // with `Duplicate member at "="` because case-arm-style scope
+    // sharing applies to ANY sibling braced block, not just switch
+    // arms. The lint surfaces it offline.
+    let r = rules(r#"
+U0 F(I64 a, I64 c) {
+  if (a) { I64 b = 1; }
+  if (c) { I64 b = 2; }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "block-shared-scope"),
+        "expected block-shared-scope on sibling ifs; got {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_if_else_split_flagged() {
+    // The two halves of an `if (..) {} else {}` each declare `i` —
+    // the then-block and else-block are siblings under one if-stmt
+    // and share the function scope.
+    let r = rules(r#"
+U0 F(I64 a) {
+  if (a) {
+    I64 i = 1;
+  } else {
+    I64 i = 2;
+  }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "block-shared-scope"),
+        "expected block-shared-scope on if/else split; got {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_while_then_if_flagged() {
+    // Different statement kinds, same level. A `while` body and a
+    // following `if` body each declare `i` — both are sibling braced
+    // blocks at the function scope.
+    let r = rules(r#"
+U0 F(I64 a, I64 b) {
+  while (a) { I64 i = 1; }
+  if (b) { I64 i = 2; }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "block-shared-scope"),
+        "expected block-shared-scope across while/if; got {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_two_for_loops_flagged() {
+    // Two `for` bodies at the same level declaring the same name —
+    // each `for` body is a sibling braced block.
+    let r = rules(r#"
+U0 F() {
+  for (I64 k = 0; k < 4; k++) { I64 i = 1; }
+  for (I64 k = 0; k < 4; k++) { I64 i = 2; }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "block-shared-scope"),
+        "expected block-shared-scope across two for-loops; got {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_try_catch_flagged() {
+    // `try { ... } catch { ... }` — both bodies are siblings of one
+    // try-stmt and share the function scope. Same name in each → flag.
+    let r = rules(r#"
+U0 F() {
+  try {
+    I64 i = 1;
+  } catch {
+    I64 i = 2;
+  }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "block-shared-scope"),
+        "expected block-shared-scope across try/catch; got {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_nested_not_flagged() {
+    // True nesting (one if-body inside another) — different scope
+    // levels, not siblings. The inner block lives at a deeper level
+    // than the outer if's contents and is checked separately when the
+    // walker recurses; no sibling decl exists at that level.
+    let r = rules(r#"
+U0 F(I64 a, I64 b) {
+  if (a) {
+    if (b) {
+      I64 i = 1;
+    }
+  }
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "block-shared-scope"),
+        "false positive on nested if-bodies: {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_single_block_clean() {
+    // One block with a single decl — nothing to compare against.
+    let r = rules(r#"
+U0 F(I64 a) {
+  if (a) {
+    I64 i = 1;
+    Print("%d\n", i);
+  }
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "block-shared-scope"),
+        "false positive on a lone block: {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_distinct_names_clean() {
+    // Two sibling ifs but with distinct decl names — clean. Confirms
+    // we don't overreach and flag every pair of sibling blocks.
+    let r = rules(r#"
+U0 F(I64 a, I64 c) {
+  if (a) { I64 b_first = 1; }
+  if (c) { I64 b_second = 2; }
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "block-shared-scope"),
+        "false positive on distinct names across siblings: {r:?}"
+    );
+}
+
+#[test]
+fn block_shared_scope_does_not_double_flag_switch() {
+    // A switch with the original case-arm collision should fire the
+    // `switch-case-shared-scope` rule but NOT `block-shared-scope` —
+    // the two rules cover disjoint shapes.
+    let r = rules(r#"
+U0 F(I64 op) {
+  switch (op) {
+    case 1: {
+      I64 ia = 5;
+    }
+    case 2: {
+      I64 ia = 7;
+    }
+  }
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "switch-case-shared-scope"),
+        "expected switch-case-shared-scope still fires; got {r:?}"
+    );
+    assert!(
+        !r.iter().any(|s| *s == "block-shared-scope"),
+        "block-shared-scope should not duplicate switch coverage: {r:?}"
     );
 }
 

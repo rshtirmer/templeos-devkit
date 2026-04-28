@@ -8,6 +8,7 @@
 //!
 //! Rules currently shipped:
 //!   - `switch-case-shared-scope`  (warning) — pure structural
+//!   - `block-shared-scope`        (warning) — pure structural
 //!   - `f64-bitwise`               (warning) — type-aware
 
 use std::collections::HashMap;
@@ -229,6 +230,7 @@ impl<'a> LintWalker<'a> {
                     self.add_param(p);
                 }
                 if let Some(body) = &f.body {
+                    check_block_shared_scope(self.file, body, self.out);
                     for s in body {
                         self.walk_stmt(s);
                     }
@@ -288,6 +290,7 @@ impl<'a> LintWalker<'a> {
             // we don't descend (mirrors `TopItem::Preprocessor`).
             | StmtKind::Preprocessor(_) => {}
             StmtKind::Block(body) => {
+                check_block_shared_scope(self.file, body, self.out);
                 self.enter_scope();
                 for s2 in body {
                     self.walk_stmt(s2);
@@ -325,9 +328,11 @@ impl<'a> LintWalker<'a> {
                 if let Some(e) = opt { self.walk_expr(e); }
             }
             StmtKind::Try { body, catch_body } => {
+                check_block_shared_scope(self.file, body, self.out);
                 self.enter_scope();
                 for s2 in body { self.walk_stmt(s2); }
                 self.leave_scope();
+                check_block_shared_scope(self.file, catch_body, self.out);
                 self.enter_scope();
                 for s2 in catch_body { self.walk_stmt(s2); }
                 self.leave_scope();
@@ -706,5 +711,101 @@ fn collect_decls(body: &[Stmt], out: &mut Vec<(String, u32, u32)>) {
             StmtKind::Block(inner) => collect_decls(inner, out),
             _ => {}
         }
+    }
+}
+
+// ============================================================
+// block-shared-scope (no type info needed)
+// ============================================================
+//
+// TempleOS's PrsType allocates one flat scope per function and shares
+// it across every braced sibling block-statement. Two `if (..) { I64 b; }`
+// at the same level collide on the second decl with `Duplicate member
+// at "="`, even though every other C-family compiler scopes each block
+// separately. The same hazard applies to if/else, while, do/while, for,
+// try/catch, and lock bodies — anywhere two braced sub-blocks share an
+// enclosing function-body level.
+//
+// Algorithm: for a given `Vec<Stmt>` level, find every braced sub-block
+// directly attached to a child statement (Blocks themselves, then/else
+// branches, while/do/for/lock bodies, try+catch bodies). Collect the
+// names of LocalDecls anywhere inside each sub-block (recursing through
+// inner Blocks; matches `collect_decls` semantics used by the switch
+// rule). A name that appears in two different sibling sub-blocks at
+// this level fires the warning. Nested sub-blocks reached only through
+// the contents of an enclosing Block are NOT flagged here — they live
+// in a deeper level and are checked when the walker recurses into that
+// Block separately.
+
+fn check_block_shared_scope(file: &str, level: &[Stmt], out: &mut Vec<Diag>) {
+    // (block-index, decl-name, line, col) per decl found in any sibling
+    // sub-block at this level.
+    let mut seen: HashMap<String, (usize, u32, u32)> = HashMap::new();
+    let mut block_idx: usize = 0;
+    for stmt in level {
+        let mut blocks: Vec<&[Stmt]> = Vec::new();
+        collect_sibling_blocks(stmt, &mut blocks);
+        for b in blocks {
+            let mut decls: Vec<(String, u32, u32)> = Vec::new();
+            collect_decls(b, &mut decls);
+            for (name, line, col) in decls {
+                if let Some(&(prior_idx, p_line, _p_col)) = seen.get(&name) {
+                    if prior_idx != block_idx {
+                        out.push(Diag {
+                            file: file.to_string(),
+                            line,
+                            col,
+                            severity: Severity::Warning,
+                            rule: "block-shared-scope",
+                            message: format!(
+                                "`{name}` is also declared in a sibling braced \
+                                 block at this function scope (first at line \
+                                 {p_line}). HolyC's PrsType allocates one flat \
+                                 scope per function, so sibling block bodies \
+                                 (if/else, while, for, try/catch, lock, bare \
+                                 blocks) share that scope and reject the second \
+                                 declaration as `Duplicate member`. Hoist the \
+                                 variable to the enclosing scope, or use \
+                                 distinct names per block"
+                            ),
+                        });
+                    }
+                } else {
+                    seen.insert(name, (block_idx, line, col));
+                }
+            }
+            block_idx += 1;
+        }
+    }
+}
+
+/// Gather every braced sub-block directly attached to `s` — without
+/// descending into the contents of those sub-blocks. The result is the
+/// set of "sibling blocks" that `s` contributes to its enclosing level.
+///
+/// Switch bodies are intentionally excluded: they have their own
+/// dedicated rule (`switch-case-shared-scope`) with case-arm-aware
+/// flushing semantics.
+fn collect_sibling_blocks<'a>(s: &'a Stmt, out: &mut Vec<&'a [Stmt]>) {
+    match &s.kind {
+        StmtKind::Block(b) => out.push(b),
+        StmtKind::If { then_branch, else_branch, .. } => {
+            collect_sibling_blocks(then_branch, out);
+            if let Some(e) = else_branch {
+                collect_sibling_blocks(e, out);
+            }
+        }
+        StmtKind::While { body, .. } | StmtKind::DoWhile { body, .. } => {
+            collect_sibling_blocks(body, out);
+        }
+        StmtKind::For { body, .. } => collect_sibling_blocks(body, out),
+        StmtKind::Lock(inner) => collect_sibling_blocks(inner, out),
+        StmtKind::Try { body, catch_body } => {
+            // Try / catch bodies are stored as bare Vec<Stmt> on the
+            // AST — they're braced in source either way.
+            out.push(body);
+            out.push(catch_body);
+        }
+        _ => {}
     }
 }
