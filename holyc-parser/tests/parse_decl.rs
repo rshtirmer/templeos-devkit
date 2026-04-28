@@ -293,6 +293,72 @@ fn fn_variadic() {
     }
 }
 
+#[test]
+fn fn_semicolon_separated_params() {
+    // Kernel idiom: `;` is a valid alternative to `,` between params.
+    let (m, diags) = parse_top("U0 StrPrintHex(U8 *dst; I64 num; I64 width);");
+    assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    match &m.items[0] {
+        TopItem::Function(f) => {
+            assert_eq!(f.name, "StrPrintHex");
+            assert_eq!(f.params.len(), 3);
+            assert_eq!(f.params[0].name.as_deref(), Some("dst"));
+            assert_eq!(f.params[1].name.as_deref(), Some("num"));
+            assert_eq!(f.params[2].name.as_deref(), Some("width"));
+            assert!(matches!(f.params[1].ty,
+                TypeRef::Prim { ty: PrimType::I64, pointer_depth: 0 }));
+            assert!(matches!(f.params[2].ty,
+                TypeRef::Prim { ty: PrimType::I64, pointer_depth: 0 }));
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn fn_mixed_comma_and_semicolon_params() {
+    // Both separators in the same param list — mirrors the kernel's
+    // `(U8 *dst, I64 num; I64 width)` pattern exactly.
+    let (m, diags) = parse_top("U0 StrPrintHex(U8 *dst, I64 num; I64 width);");
+    assert!(diags.is_empty(), "expected no diagnostics, got {:?}", diags);
+    match &m.items[0] {
+        TopItem::Function(f) => {
+            assert_eq!(f.name, "StrPrintHex");
+            assert_eq!(f.params.len(), 3);
+            assert_eq!(f.params[0].name.as_deref(), Some("dst"));
+            assert_eq!(f.params[1].name.as_deref(), Some("num"));
+            assert_eq!(f.params[2].name.as_deref(), Some("width"));
+        }
+        other => panic!("expected Function, got {:?}", other),
+    }
+}
+
+#[test]
+fn fn_def_semicolon_params_same_ast_as_comma() {
+    // Structural equivalence: `;` separator produces the same AST as
+    // `,` separator (modulo trivia).
+    let (m_comma, _) = parse_top("I64 add(I64 a, I64 b) { return a + b; }");
+    let (m_semi, _) = parse_top("I64 add(I64 a; I64 b) { return a + b; }");
+    let (fc, fs) = match (&m_comma.items[0], &m_semi.items[0]) {
+        (TopItem::Function(fc), TopItem::Function(fs)) => (fc, fs),
+        _ => panic!("expected Function in both"),
+    };
+    assert_eq!(fc.name, fs.name);
+    assert_eq!(fc.params.len(), fs.params.len());
+    for (pc, ps) in fc.params.iter().zip(fs.params.iter()) {
+        assert_eq!(pc.name, ps.name);
+        match (&pc.ty, &ps.ty) {
+            (TypeRef::Prim { ty: t1, pointer_depth: d1 },
+             TypeRef::Prim { ty: t2, pointer_depth: d2 }) => {
+                assert_eq!(t1, t2);
+                assert_eq!(d1, d2);
+            }
+            _ => panic!("expected matching prim types"),
+        }
+        assert_eq!(pc.variadic, ps.variadic);
+    }
+    assert!(fc.body.is_some() && fs.body.is_some());
+}
+
 // -------- class / union --------
 
 #[test]

@@ -275,8 +275,12 @@ fn try_parse_function_pointer(
     Some(t)
 }
 
-/// Parse a comma-separated parameter list, stopping at the closing
-/// `)`. Used by both type_.rs (fun-pointer) and decl.rs (real fn decl).
+/// Parse a comma- or semicolon-separated parameter list, stopping at
+/// the closing `)`. Used by both type_.rs (fun-pointer) and decl.rs
+/// (real fn decl). HolyC accepts both `,` and `;` interchangeably as
+/// parameter separators — e.g. the kernel's
+/// `U0 StrPrintHex(U8 *dst, I64 num; I64 width)` is a real idiom.
+/// Both separators produce the same AST.
 pub fn parse_param_list(p: &mut Parser) -> Vec<Param> {
     let mut params = Vec::new();
     if matches!(p.peek(), TokenKind::RParen) { return params; }
@@ -328,7 +332,8 @@ pub fn parse_param_list(p: &mut Parser) -> Vec<Param> {
             default,
             variadic: false,
         });
-        if !p.eat(&TokenKind::Comma) { break; }
+        // Both `,` and `;` are valid parameter separators in HolyC.
+        if !p.eat(&TokenKind::Comma) && !p.eat(&TokenKind::Semicolon) { break; }
     }
     params
 }
