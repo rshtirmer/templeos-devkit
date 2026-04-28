@@ -10,7 +10,15 @@
 pub mod diag;
 pub mod lex;
 pub mod lint;
-pub mod preproc;
 pub mod parse;
 pub mod symbol;
-pub mod types;
+
+// NOTE: there is no dedicated `preproc` or `types` module. Preprocessor
+// directives are recognized by the parser and surface as
+// `parse::ast::PpDirective` AST nodes (we deliberately do not expand
+// macros — TempleOS's parametrized `#define` is unreliable across
+// ExePutS chunks, and the lint warns rather than expanding). Type
+// information is tracked just enough to drive type-aware lint rules
+// in `lint::TypeContext` (function signatures + global var types +
+// integer-typed `#define` bodies). A full type checker would
+// re-introduce a `types` module; today neither one is needed.
