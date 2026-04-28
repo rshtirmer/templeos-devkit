@@ -364,7 +364,40 @@ impl<'a> LintWalker<'a> {
             | ExprKind::HolycCast(x, _) => self.walk_expr(x),
             ExprKind::Binary(op, l, r) => {
                 if matches!(op, BinOp::BitAnd | BinOp::BitOr | BinOp::BitXor) {
-                    if !self.looks_integer(l) && !self.looks_integer(r) {
+                    // Operand-level check: warn whenever EITHER side is
+                    // known to be F64-typed. The previous formulation
+                    // `!integer(l) && !integer(r)` missed cases like
+                    // `f64_call() & 0xFF` — the literal looked integer
+                    // and short-circuited the AND, but at runtime the
+                    // mask still operates on the F64 bit pattern, not
+                    // the integer the author wanted. We don't widen to
+                    // "either side not-known-integer" because that
+                    // would false-positive on every bitop involving an
+                    // identifier we can't resolve (untracked locals,
+                    // members, etc.). Symmetrically, an explicit
+                    // postfix cast `x(I64)` makes the operand known
+                    // integer, so it suppresses the warning.
+                    if self.is_known_float(l) || self.is_known_float(r) {
+                        self.out.push(Diag {
+                            file: self.file.to_string(),
+                            line: e.span.0.line,
+                            col: e.span.0.col,
+                            severity: Severity::Warning,
+                            rule: "f64-bitwise",
+                            message: format!(
+                                "bitwise `{}` with an F64-typed operand; \
+                                 HolyC's bitwise ops act on IEEE-754 bit patterns \
+                                 when an operand is F64, not on integer truncation. \
+                                 Assign the F64 to an I64 first or postfix-cast \
+                                 (`expr(I64)`) the F64 operand",
+                                op_name(*op)
+                            ),
+                        });
+                    } else if !self.looks_integer(l) && !self.looks_integer(r) {
+                        // Fallback: neither side is known integer
+                        // (e.g. two un-typed idents). Keep the
+                        // pre-existing "both non-integer" heuristic so
+                        // we still flag obvious F64 literal pairs.
                         self.out.push(Diag {
                             file: self.file.to_string(),
                             line: e.span.0.line,
@@ -468,6 +501,50 @@ impl<'a> LintWalker<'a> {
         looks_integer_shape(e) || self.looks_integer_via_types(e)
     }
 
+    /// Type-aware check: is `e` an expression whose value is
+    /// definitely an F64? Used by `f64-bitwise` so we warn whenever
+    /// we can prove ANY operand is float, even when the other side
+    /// is an integer literal (the case the original "both must look
+    /// non-integer" heuristic missed).
+    ///
+    /// Looks through parens. For idents and direct calls, consults
+    /// the type context (locals + globals + function return types +
+    /// integer-bodied `#define`s). Postfix `expr (I64)` casts make
+    /// the resulting expression integer-typed, so they short-circuit
+    /// here via `looks_integer_shape` checks at the call sites; we
+    /// don't classify HolycCast targeting F64 because explicit
+    /// `expr(F64)` casts are intentional and not the bug pattern.
+    fn is_known_float(&self, e: &Expr) -> bool {
+        match &e.kind {
+            ExprKind::FloatLit(_) => true,
+            ExprKind::Paren(inner) => self.is_known_float(inner),
+            ExprKind::Prefix(PrefixOp::Plus | PrefixOp::Minus, inner) => {
+                self.is_known_float(inner)
+            }
+            ExprKind::Ident(name) => self
+                .type_of(name)
+                .map(is_float_type)
+                .unwrap_or(false),
+            ExprKind::Call(callee, _) => {
+                if let ExprKind::Ident(name) = &callee.kind {
+                    self.type_of(name).map(is_float_type).unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            ExprKind::Index(arr, _) => {
+                if let ExprKind::Ident(name) = &arr.kind {
+                    self.type_of(name).map(is_float_type).unwrap_or(false)
+                } else {
+                    false
+                }
+            }
+            // HolycCast carries an explicit type: trust it.
+            ExprKind::HolycCast(_, ty) => is_float_type(ty),
+            _ => false,
+        }
+    }
+
     fn looks_integer_via_types(&self, e: &Expr) -> bool {
         match &e.kind {
             ExprKind::Ident(name) => self
@@ -540,6 +617,17 @@ fn is_integer_type(ty: &TypeRef) -> bool {
             | PrimType::I64,
             ..
         }
+    )
+}
+
+/// True for `F64` (the only float primitive HolyC has). A pointer
+/// type — even `F64*` — is treated as integer-ish for bitwise lint
+/// purposes since the bit pattern of a pointer is just an address;
+/// only the scalar `F64` carries the IEEE-754 bit-pattern hazard.
+fn is_float_type(ty: &TypeRef) -> bool {
+    matches!(
+        ty,
+        TypeRef::Prim { ty: PrimType::F64, pointer_depth: 0 }
     )
 }
 
