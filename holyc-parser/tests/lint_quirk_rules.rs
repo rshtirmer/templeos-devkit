@@ -379,3 +379,136 @@ U0 F() {
 "#);
     assert!(r.iter().any(|s| *s == "f64-bitwise"), "or missed: {r:?}");
 }
+
+// ---------- f64-bitwise: per-operand check ----------
+//
+// The pre-2025 formulation used "warn if BOTH operands look
+// non-integer," which short-circuited on the very common pattern of
+// masking an F64-returning call against a literal. Operand-level
+// checks must catch any F64 side regardless of what the LHS
+// declaration or the other operand is.
+
+#[test]
+fn f64_bitwise_flagged_on_f64_call_with_int_literal_mask() {
+    // The reproducer: an F64-returning function on the left, integer
+    // literal on the right, assigned to an I64 destination. The
+    // assignment target was previously "evidence enough" — but at
+    // runtime the bitop happens in IEEE-754 space before the result
+    // is widened to the I64 slot. Must warn.
+    let r = warnings_only(r#"
+F64 PR_GetFloat(I64 i) {
+  return 1.5;
+}
+U0 F() {
+  I64 vi = PR_GetFloat(0) & 0xFF;
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "f64-bitwise"),
+        "missed F64-call & int-literal pattern: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_flagged_on_f64_call_with_i64_var() {
+    // Variant: the literal is replaced by a known I64 local. The
+    // F64 side still poisons the operation.
+    let r = warnings_only(r#"
+F64 PR_GetFloat(I64 i) {
+  return 1.5;
+}
+U0 F() {
+  I64 mask = 0xFF;
+  I64 vi = PR_GetFloat(0) & mask;
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "f64-bitwise"),
+        "missed F64-call & I64-var pattern: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_flagged_on_f64_var_with_int_literal_mask() {
+    // Direct F64 local on one side, int literal on the other. Same
+    // shape as a real-world Quake port site.
+    let r = warnings_only(r#"
+U0 F() {
+  F64 v = 3.14;
+  I64 vi = v & 0xFF;
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "f64-bitwise"),
+        "missed F64-local & int-literal pattern: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_i64_var_and_int_literal() {
+    // Negative case: I64 LHS, int literal RHS. Must not warn.
+    let r = warnings_only(r#"
+U0 F() {
+  I64 v = 5;
+  I64 vi = v & 0xFF;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on I64-var & int-literal: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_explicit_postfix_cast_of_f64() {
+    // Negative case: HolyC postfix cast `expr(I64)` of the F64
+    // operand should suppress the warning. The cast pulls the
+    // bitop back into integer space, which is exactly the documented
+    // workaround.
+    let r = warnings_only(r#"
+U0 F() {
+  F64 v = 3.14;
+  I64 vi = v(I64) & 0xFF;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on cast f64 operand: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_clean_on_explicit_postfix_cast_of_f64_call() {
+    // Same as above but the F64 source is a call — verifies the cast
+    // wraps a more complex expression too.
+    let r = warnings_only(r#"
+F64 PR_GetFloat(I64 i) {
+  return 1.5;
+}
+U0 F() {
+  I64 vi = PR_GetFloat(0)(I64) & 0xFF;
+}
+"#);
+    assert!(
+        !r.iter().any(|s| *s == "f64-bitwise"),
+        "false positive on cast f64-call operand: {r:?}"
+    );
+}
+
+#[test]
+fn f64_bitwise_flagged_when_f64_call_is_rhs() {
+    // Symmetry: if the F64 operand is on the right and the int side
+    // on the left, the warning must still fire.
+    let r = warnings_only(r#"
+F64 PR_GetFloat(I64 i) {
+  return 1.5;
+}
+U0 F() {
+  I64 vi = 0xFF & PR_GetFloat(0);
+}
+"#);
+    assert!(
+        r.iter().any(|s| *s == "f64-bitwise"),
+        "missed when F64 operand is on RHS: {r:?}"
+    );
+}
