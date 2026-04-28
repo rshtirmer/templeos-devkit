@@ -178,6 +178,11 @@ pub enum StmtKind {
     Default,
     SubSwitchStart,
     SubSwitchEnd,
+    /// Preprocessor directive appearing mid-body (function body,
+    /// block, for-body, switch-body, try/catch, lock, etc.). We
+    /// don't expand `#ifdef` — both branches are preserved verbatim
+    /// in the surrounding `Vec<Stmt>`. Mirrors `TopItem::Preprocessor`.
+    Preprocessor(PpDirective),
 }
 
 #[derive(Clone, Debug, PartialEq)]

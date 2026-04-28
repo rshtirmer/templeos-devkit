@@ -29,6 +29,13 @@ fn parse_statement_inner(p: &mut Parser, at_file_scope: bool) -> Option<Stmt> {
             p.bump();
             Some(Stmt { kind: StmtKind::Empty, span: (start, p.current_pos()) })
         }
+        TokenKind::Hash => {
+            // Preprocessor directive mid-body — `#ifdef`/`#endif`/etc.
+            // We don't expand: both branches are kept verbatim as
+            // sibling statements (mirrors top-level handling).
+            let pp = crate::parse::decl::parse_preprocessor(p)?;
+            Some(Stmt { kind: StmtKind::Preprocessor(pp), span: (start, p.current_pos()) })
+        }
         TokenKind::LBrace => Some(parse_block(p, start)),
         TokenKind::Ident(name) => {
             // Contextual keywords: `start` / `end` are sub-switch
