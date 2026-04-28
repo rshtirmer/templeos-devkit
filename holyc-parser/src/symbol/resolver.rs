@@ -296,7 +296,7 @@ impl Resolver {
                 }
             }
             ExprKind::IntLit(_) | ExprKind::FloatLit(_) | ExprKind::CharLit(_)
-            | ExprKind::StrLit(_) | ExprKind::DolDol => {}
+            | ExprKind::StrLit(_) | ExprKind::DolDol | ExprKind::DefaultArgSlot => {}
             ExprKind::Prefix(_, x) | ExprKind::Postfix(_, x) | ExprKind::Paren(x) => {
                 self.check_expr(file, x, scope, diags);
             }

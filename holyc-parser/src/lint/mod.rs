@@ -355,7 +355,8 @@ impl<'a> LintWalker<'a> {
     fn walk_expr(&mut self, e: &Expr) {
         match &e.kind {
             ExprKind::IntLit(_) | ExprKind::FloatLit(_) | ExprKind::CharLit(_)
-            | ExprKind::StrLit(_) | ExprKind::Ident(_) | ExprKind::DolDol => {}
+            | ExprKind::StrLit(_) | ExprKind::Ident(_) | ExprKind::DolDol
+            | ExprKind::DefaultArgSlot => {}
             ExprKind::Prefix(_, x) | ExprKind::Postfix(_, x) | ExprKind::Paren(x)
             | ExprKind::HolycCast(x, _) => self.walk_expr(x),
             ExprKind::Binary(op, l, r) => {

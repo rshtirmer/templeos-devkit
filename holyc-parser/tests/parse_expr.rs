@@ -568,3 +568,47 @@ fn comma_in_call_args_only() {
         k => panic!("expected Call, got {k:?}"),
     }
 }
+
+#[test]
+fn call_empty_default_arg_slot_middle() {
+    // HolyC allows omitting an argument when the callee declares a
+    // default value for that parameter — `f(a, , c)` means "use the
+    // declared default for the second parameter."
+    match kind(&parse_ok("f(1, , 3)")) {
+        ExprKind::Call(_, args) => {
+            assert_eq!(args.len(), 3);
+            assert_eq!(args[0].kind, ExprKind::IntLit(1));
+            assert_eq!(args[1].kind, ExprKind::DefaultArgSlot);
+            assert_eq!(args[2].kind, ExprKind::IntLit(3));
+        }
+        k => panic!("expected Call, got {k:?}"),
+    }
+}
+
+#[test]
+fn call_empty_default_arg_slot_trailing() {
+    // Trailing empty slot — `f(a,)` means "default the last param."
+    match kind(&parse_ok("f(1,)")) {
+        ExprKind::Call(_, args) => {
+            assert_eq!(args.len(), 2);
+            assert_eq!(args[0].kind, ExprKind::IntLit(1));
+            assert_eq!(args[1].kind, ExprKind::DefaultArgSlot);
+        }
+        k => panic!("expected Call, got {k:?}"),
+    }
+}
+
+#[test]
+fn call_empty_default_arg_slot_leading_and_trailing() {
+    // Leading + trailing empty slot — `f(, b,)` keeps the slots in the
+    // exact positions the callee's parameter list expects.
+    match kind(&parse_ok("f(, 2,)")) {
+        ExprKind::Call(_, args) => {
+            assert_eq!(args.len(), 3);
+            assert_eq!(args[0].kind, ExprKind::DefaultArgSlot);
+            assert_eq!(args[1].kind, ExprKind::IntLit(2));
+            assert_eq!(args[2].kind, ExprKind::DefaultArgSlot);
+        }
+        k => panic!("expected Call, got {k:?}"),
+    }
+}
