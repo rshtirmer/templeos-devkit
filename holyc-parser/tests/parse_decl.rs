@@ -157,6 +157,88 @@ fn extern_var() {
     }
 }
 
+// -------- HolyC-specific storage-class modifiers --------
+//
+// HolyC's `reg` / `noreg` are register-allocation hints. `reg` may
+// optionally carry a register name (`reg("RAX")` or `reg RAX` per
+// dialect — TempleOS uses bare ident, ZealOS the string form). The
+// underscore-prefixed `_extern` / `_import` are TempleOS-specific
+// forward-decl variants distinct from plain `extern` / `import`.
+// `lastclass` marks an inheritance slot in a class member list;
+// at file scope it's a meaningless-but-accepted modifier.
+
+#[test]
+fn reg_local() {
+    // `reg` on a local var — Quake's mathlib hot loops use this.
+    let (decls, _) = parse_local_only("reg I64 i = 0;");
+    let decls = decls.expect("expected local decl");
+    assert!(decls[0].modifiers.contains(&Modifier::Reg));
+}
+
+#[test]
+fn reg_with_register_name() {
+    // `reg RAX I64 i;` — bare-ident reg-name form. The ident is
+    // consumed by parse_modifiers; we just verify the Reg modifier
+    // is present and parsing proceeds cleanly.
+    let (decls, rules) = parse_local_only("reg RAX I64 i;");
+    let decls = decls.expect("expected local decl");
+    assert!(decls[0].modifiers.contains(&Modifier::Reg));
+    assert_eq!(decls[0].name, "i");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+}
+
+#[test]
+fn noreg_local() {
+    let (decls, _) = parse_local_only("noreg I64 i;");
+    let decls = decls.expect("expected local decl");
+    assert!(decls[0].modifiers.contains(&Modifier::Noreg));
+}
+
+#[test]
+fn extern_underscore_var() {
+    // `_extern SymName F64 cos;` — TempleOS forward-decl variant.
+    // The optional ident after `_extern` should be consumed.
+    let (m, rules) = parse_top("_extern Sin F64 sin;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => {
+            assert!(v.modifiers.contains(&Modifier::ExternUnderscore));
+            assert_eq!(v.name, "sin");
+        }
+        other => panic!("expected Variable, got {:?}", other),
+    }
+}
+
+#[test]
+fn import_underscore_var() {
+    // `_import "label" F64 g;` — the "label" string literal is
+    // optional and consumed when present.
+    let (m, rules) = parse_top("_import \"_FOO\" F64 g;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => {
+            assert!(v.modifiers.contains(&Modifier::ImportUnderscore));
+            assert_eq!(v.name, "g");
+        }
+        other => panic!("expected Variable, got {:?}", other),
+    }
+}
+
+#[test]
+fn lastclass_modifier() {
+    // `lastclass` is most meaningful inside class bodies, but the
+    // parser accepts it as a modifier wherever modifiers go. Smoke
+    // test that the modifier reaches the AST.
+    let (m, rules) = parse_top("lastclass F64 g;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => {
+            assert!(v.modifiers.contains(&Modifier::Lastclass));
+        }
+        other => panic!("expected Variable, got {:?}", other),
+    }
+}
+
 // -------- function decls --------
 
 #[test]

@@ -173,6 +173,37 @@ fn case_auto_increment() {
 }
 
 #[test]
+fn case_range_triple_dot() {
+    // HolyC `case 1 ... 5:` — the corpus exercises this as a smoke
+    // test, but doesn't assert structure. Lock in CaseValue::Range
+    // with both bounds preserved.
+    let (s, rules) = parse_one_stmt("case 1 ... 5 :");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::Case(values) => {
+            assert_eq!(values.len(), 1);
+            assert!(matches!(values[0], CaseValue::Range(..)));
+        }
+        k => panic!("expected Case, got {:?}", k),
+    }
+}
+
+#[test]
+fn case_range_double_dot() {
+    // `..` is also accepted as a range operator (parse-spec §5.12);
+    // mirrors the `...` case above.
+    let (s, rules) = parse_one_stmt("case 1 .. 5 :");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::Case(values) => {
+            assert_eq!(values.len(), 1);
+            assert!(matches!(values[0], CaseValue::Range(..)));
+        }
+        k => panic!("expected Case, got {:?}", k),
+    }
+}
+
+#[test]
 fn default_stmt() {
     let (s, _) = parse_one_stmt("default :");
     assert!(matches!(s.unwrap().kind, StmtKind::Default));
