@@ -644,6 +644,46 @@ fn global_fnptr_array_with_init() {
     assert!(matches!(var.init, Some(Initializer::Aggregate(_))));
 }
 
+// -------- `offset` is a contextual keyword --------
+//
+// HolyC's `offset` only acts as the offsetof operator when followed
+// by `(`. As an ordinary identifier (kernel code uses it as a local
+// or parameter name very routinely) it must resolve as a plain ident.
+
+#[test]
+fn offset_as_param_name() {
+    let (m, rules) = parse_top("U0 F(I64 offset) { return; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let func = m.items.iter().find_map(|it| match it {
+        TopItem::Function(f) => Some(f),
+        _ => None,
+    }).expect("function");
+    assert_eq!(func.params.len(), 1);
+    assert_eq!(func.params[0].name.as_deref(), Some("offset"));
+}
+
+#[test]
+fn offset_as_local_var() {
+    // I64 offset = 0; at function scope must parse cleanly with no
+    // diagnostics — the bare identifier `offset` is just a name.
+    let (m, rules) = parse_top("U0 F() { I64 offset = 0; offset++; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    // Must have produced exactly one function (no decl-vs-stmt confusion).
+    let funcs: Vec<_> = m.items.iter().filter(|it| matches!(it, TopItem::Function(_))).collect();
+    assert_eq!(funcs.len(), 1);
+}
+
+#[test]
+fn offset_as_global_var() {
+    // `I64 offset;` at file scope is just a variable declaration.
+    let (m, rules) = parse_top("I64 offset;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => assert_eq!(v.name, "offset"),
+        other => panic!("expected Variable, got {other:?}"),
+    }
+}
+
 // -------- silence unused import warning --------
 #[allow(dead_code)]
 fn _force_use() {

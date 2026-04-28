@@ -80,7 +80,6 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
             | Some(Keyword::Start)
             | Some(Keyword::End)
             | Some(Keyword::Sizeof)
-            | Some(Keyword::Offset)
             | Some(Keyword::Defined) => {
                 let s = crate::parse::stmt::parse_statement_top(p)?;
                 Some(TopItem::Stmt(s))

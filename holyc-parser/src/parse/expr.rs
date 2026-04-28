@@ -215,8 +215,13 @@ fn parse_unary_term(p: &mut Parser) -> Option<Expr> {
     if p.at_keyword(Keyword::Sizeof) {
         return parse_sizeof(p);
     }
-    if p.at_keyword(Keyword::Offset) {
-        return parse_offsetof(p);
+    // `offset` is a contextual keyword: it's the offsetof operator
+    // only when followed by `(`. Bare `offset` is a regular identifier
+    // (kernel code uses it as a local-variable / parameter name).
+    if let TokenKind::Ident(s) = p.peek() {
+        if s == "offset" && matches!(p.peek_at(1), TokenKind::LParen) {
+            return parse_offsetof(p);
+        }
     }
     if p.at_keyword(Keyword::Defined) {
         return parse_defined(p);

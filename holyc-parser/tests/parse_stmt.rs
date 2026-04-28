@@ -373,6 +373,19 @@ fn unknown_ident_starts_expr_stmt() {
     let _ = rules;
 }
 
+// -------- `offset` contextual keyword --------
+//
+// `offset` followed by `(` is the offsetof operator; otherwise it's
+// a plain identifier. Mixing both forms in the same function works.
+
+#[test]
+fn offset_local_then_offsetof_operator() {
+    // `I64 offset = ...` declares a local; `offset(Foo.bar)` invokes
+    // the offsetof operator. Both must coexist with no diagnostics.
+    let (_s, rules) = parse_one_stmt("{ I64 offset = offset(Foo.bar); offset = offset + 4; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+}
+
 // -------- semantics: case-range parses values without panic --------
 
 #[test]

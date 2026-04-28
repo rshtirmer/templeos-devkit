@@ -26,7 +26,6 @@ pub enum Keyword {
     Start,
     End,
     Sizeof,
-    Offset,
     Defined,
     Asm,
 
@@ -85,7 +84,11 @@ pub fn lookup(name: &str) -> Option<Keyword> {
         "start" => Start,
         "end" => End,
         "sizeof" => Sizeof,
-        "offset" => Offset,
+        // Note: `offset` is a CONTEXTUAL keyword — it only acts as the
+        // offsetof operator when followed by `(`. Otherwise (e.g. as a
+        // local variable / parameter name, which kernel code does
+        // routinely) it must resolve as a plain identifier. The
+        // contextual dispatch lives in `parse::expr::parse_unary_term`.
         "defined" => Defined,
         "asm" => Asm,
 
