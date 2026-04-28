@@ -294,6 +294,11 @@ def main():
                     help="assume daemon already running (D_OK already in log)")
     ap.add_argument("--filter", default="",
                     help="substring filter for tests (T= equivalent)")
+    ap.add_argument("--push-timeout", type=float,
+                    default=float(os.environ.get("PUSH_TIMEOUT", "60")),
+                    help="seconds to wait for D_DONE per pushed chunk "
+                         "(env: PUSH_TIMEOUT). Bump for large test "
+                         "batteries that exceed the 60s default.")
     ap.add_argument("--src-dir", default=os.environ.get("SRC_DIR", ""),
                     help="override src/ directory (env: SRC_DIR). "
                          "Default: <devkit>/src. Use this when the devkit is "
@@ -414,7 +419,7 @@ def main():
     print(f"==> phase 1: pushing {len(src_files)} source files")
     for f in src_files:
         if not push_and_wait(_prep(f.read_bytes()),
-                             f.name, timeout=60.0):
+                             f.name, timeout=args.push_timeout):
             sys.exit(1)
 
     if args.launch is not None:
@@ -443,7 +448,7 @@ def main():
     push_and_wait(b'CommPrint(1,"TEST_RUN_BEGIN\\n");', "begin-marker", 10.0)
     for f in test_files:
         if not push_and_wait(_prep(f.read_bytes()),
-                             f.name, timeout=60.0):
+                             f.name, timeout=args.push_timeout):
             sys.exit(1)
     boot = (
         b'TEST_SUMMARY;'
