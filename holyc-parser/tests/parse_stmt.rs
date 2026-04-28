@@ -303,15 +303,32 @@ fn default_stmt() {
 }
 
 #[test]
-fn sub_switch_start() {
-    let (s, _) = parse_one_stmt("start :");
-    assert!(matches!(s.unwrap().kind, StmtKind::SubSwitchStart));
+fn sub_switch_start_inside_switch() {
+    // `start` / `end` are CONTEXTUAL keywords — they only act as
+    // sub-switch markers inside a switch body. Outside, they're
+    // ordinary identifiers (label / expression).
+    let (s, _) = parse_one_stmt("switch (x) { start: case 1: break; end: }");
+    let stmt = s.unwrap();
+    if let StmtKind::Switch { body, .. } = stmt.kind {
+        assert!(body.iter().any(|s| matches!(s.kind, StmtKind::SubSwitchStart)));
+        assert!(body.iter().any(|s| matches!(s.kind, StmtKind::SubSwitchEnd)));
+    } else {
+        panic!("expected Switch");
+    }
 }
 
 #[test]
-fn sub_switch_end() {
+fn start_outside_switch_is_label() {
+    // Bare `start :` outside of a switch must NOT produce
+    // SubSwitchStart — it parses as an ordinary label.
+    let (s, _) = parse_one_stmt("start :");
+    assert!(matches!(s.unwrap().kind, StmtKind::Label(_)));
+}
+
+#[test]
+fn end_outside_switch_is_label() {
     let (s, _) = parse_one_stmt("end :");
-    assert!(matches!(s.unwrap().kind, StmtKind::SubSwitchEnd));
+    assert!(matches!(s.unwrap().kind, StmtKind::Label(_)));
 }
 
 // -------- try / catch --------
@@ -464,6 +481,32 @@ fn unknown_ident_starts_expr_stmt() {
     let (_s, rules) = parse_one_stmt("foo;");
     // Either expr-stub-todo or no rules — both are acceptable shapes.
     let _ = rules;
+}
+
+// -------- `start` / `end` / `reg` contextual keywords --------
+//
+// `start` / `end` are sub-switch markers only inside a switch body;
+// outside they're ordinary identifiers. `reg` is a modifier only in
+// modifier-prefix position; otherwise it's an identifier. The four
+// names must work as both forms in the same function (kernel-style).
+
+#[test]
+fn start_used_as_marker_and_local_in_same_function() {
+    // `I64 start;` declares a local. `switch (x) { start: ... end: }`
+    // uses `start`/`end` as sub-switch markers. Inside the switch body,
+    // `start = 5;` re-uses the local. All three must coexist.
+    let (_s, rules) = parse_one_stmt(
+        "{ I64 start; switch (x) { start: case 1: start = 5; end: } }",
+    );
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+}
+
+#[test]
+fn reg_modifier_then_reg_local_var() {
+    // `reg I64 i;` declares with a register hint; `I64 reg;` declares
+    // a local literally named `reg`. Both forms in one function.
+    let (_s, rules) = parse_one_stmt("{ reg I64 i = 0; I64 reg = 0; reg = i; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
 }
 
 // -------- `offset` contextual keyword --------

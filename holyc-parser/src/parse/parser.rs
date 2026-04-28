@@ -44,6 +44,14 @@ pub struct Parser {
     cursor: usize,
     pub diags: Vec<Diag>,
     pub config: ParseConfig,
+    /// Depth of nested `switch` body parsing. Incremented on entry
+    /// to `parse_switch`'s body and decremented on exit. Used to
+    /// make `start` / `end` contextual keywords — they only act as
+    /// sub-switch markers (parse-spec §3) when seen at statement
+    /// position inside a switch body. Outside a switch (depth == 0)
+    /// they resolve as plain identifiers, matching real-world kernel
+    /// usage where `start` is a common local-variable name.
+    pub switch_depth: u32,
 }
 
 impl Parser {
@@ -54,6 +62,7 @@ impl Parser {
             cursor: 0,
             diags: Vec::new(),
             config,
+            switch_depth: 0,
         }
     }
 

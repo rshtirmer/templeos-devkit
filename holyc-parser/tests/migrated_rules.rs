@@ -61,21 +61,26 @@ fn reserved_name_collision_inf_param() {
     assert!(r.contains(&"reserved-name-collision"), "got {r:?}");
 }
 
+// Note: `end` was previously the canonical "keyword as name" probe
+// here — but `end` (and `start`) are now CONTEXTUAL keywords, usable
+// as ordinary names outside a switch body. Switched to `while` which
+// remains a global keyword.
+
 #[test]
 fn keyword_as_decl_name_global() {
-    let r = rules("I64 end = 42;");
+    let r = rules("I64 while = 42;");
     assert!(r.contains(&"keyword-as-name"), "got {r:?}");
 }
 
 #[test]
 fn keyword_as_decl_name_local() {
-    let r = rules("U0 F() { I64 end = 42; }");
+    let r = rules("U0 F() { I64 while = 42; }");
     assert!(r.contains(&"keyword-as-name"), "got {r:?}");
 }
 
 #[test]
 fn keyword_as_function_name() {
-    let r = rules("U0 end() { Print(\"x\"); }");
+    let r = rules("U0 while() { Print(\"x\"); }");
     assert!(r.contains(&"keyword-as-name"), "got {r:?}");
 }
 

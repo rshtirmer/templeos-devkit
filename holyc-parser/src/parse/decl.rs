@@ -48,6 +48,9 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
                 }
             }
             // Storage / linkage modifiers always lead a declaration.
+            // Note: `reg` / `noreg` are CONTEXTUAL keywords now —
+            // their decl-prefix routing happens via the bare-ident
+            // branch below (`looks_like_decl_after_reg_modifier`).
             Some(Keyword::Static)
             | Some(Keyword::Public)
             | Some(Keyword::Interrupt)
@@ -59,10 +62,11 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
             | Some(Keyword::Argpop)
             | Some(Keyword::Noargpop)
             | Some(Keyword::Nostkchk)
-            | Some(Keyword::Lastclass)
-            | Some(Keyword::Noreg)
-            | Some(Keyword::Reg) => parse_global_decl(p),
-            // Statement-introducing keywords.
+            | Some(Keyword::Lastclass) => parse_global_decl(p),
+            // Statement-introducing keywords. Note: `start` / `end`
+            // are CONTEXTUAL keywords (sub-switch markers inside a
+            // switch body) — at file scope they're plain idents that
+            // fall through to the bare-ident branch below.
             Some(Keyword::Return)
             | Some(Keyword::Goto)
             | Some(Keyword::Break)
@@ -77,8 +81,6 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
             | Some(Keyword::Lock)
             | Some(Keyword::Case)
             | Some(Keyword::Default)
-            | Some(Keyword::Start)
-            | Some(Keyword::End)
             | Some(Keyword::Sizeof)
             | Some(Keyword::Defined) => {
                 let s = crate::parse::stmt::parse_statement_top(p)?;
@@ -93,12 +95,18 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
             }
             None => {
                 // bare ident at file scope. Could be:
+                //   - `reg`/`noreg` modifier prefix → decl
                 //   - `IDENT:` — label (rejected at file scope per §5.1)
                 //   - `IDENT IDENT …` or `IDENT *…` — decl whose type is
                 //     a user-defined class (e.g. `cvar_t v;`,
                 //     `cvar_t *Cvar_FindVar(...)`)
                 //   - `IDENT(…)` — function-call expression statement
                 //   - anything else — expression statement
+                if (name == "reg" || name == "noreg")
+                    && looks_like_decl_after_reg_modifier(p)
+                {
+                    return parse_global_decl(p);
+                }
                 if matches!(p.peek_at(1), TokenKind::Colon) {
                     let pos = p.current_pos();
                     p.bump(); p.bump();
@@ -460,26 +468,29 @@ fn parse_modifiers(p: &mut Parser) -> Vec<Modifier> {
                 }
                 Some(Keyword::Lock) => { p.bump(); mods.push(Modifier::Lock); }
                 Some(Keyword::Lastclass) => { p.bump(); mods.push(Modifier::Lastclass); }
-                Some(Keyword::Noreg) => { p.bump(); mods.push(Modifier::Noreg); }
-                Some(Keyword::Reg) => {
-                    p.bump();
-                    mods.push(Modifier::Reg);
-                    // optional REG_NAME ident
-                    if let TokenKind::Ident(s) = p.peek() {
-                        // Don't eat type keywords as reg names.
-                        if lookup_keyword(s).is_none() || matches!(lookup_keyword(s), None) {
-                            // No way to know without a register table;
-                            // accept any ident that's also not a primitive type.
-                            let kw = lookup_keyword(s);
-                            if matches!(kw, None) {
-                                p.bump();
-                            }
-                        }
-                    }
-                }
                 Some(Keyword::Argpop) => { p.bump(); mods.push(Modifier::Argpop); }
                 Some(Keyword::Noargpop) => { p.bump(); mods.push(Modifier::Noargpop); }
                 Some(Keyword::Nostkchk) => { p.bump(); mods.push(Modifier::Nostkchk); }
+                // `reg` / `noreg` are CONTEXTUAL keywords: they're
+                // modifiers only when leading a declaration. The
+                // dispatcher's `looks_like_decl_after_reg_modifier`
+                // check has already vetted that we're in modifier-
+                // prefix position by the time we re-enter here, so a
+                // bare `reg` / `noreg` ident is a real modifier. The
+                // optional REG_NAME ident after `reg` is consumed
+                // best-effort (any non-keyword ident).
+                None if s == "reg" => {
+                    p.bump();
+                    mods.push(Modifier::Reg);
+                    if let TokenKind::Ident(name) = p.peek() {
+                        if lookup_keyword(name).is_none()
+                            && !matches!(name.as_str(), "reg" | "noreg")
+                        {
+                            p.bump();
+                        }
+                    }
+                }
+                None if s == "noreg" => { p.bump(); mods.push(Modifier::Noreg); }
                 _ => break,
             }
         } else {
@@ -487,6 +498,64 @@ fn parse_modifiers(p: &mut Parser) -> Vec<Modifier> {
         }
     }
     mods
+}
+
+/// True if the current ident is `reg` / `noreg` AND it leads a
+/// declaration (modifier-prefix position), so the dispatcher should
+/// route to `parse_global_decl` / `parse_local_decl_stmt` rather than
+/// treating it as a plain identifier. Walks past `reg`'s optional
+/// reg-name ident and any further modifier keywords; returns true if
+/// we then land on a type keyword or a likely user-defined-type ident.
+pub(crate) fn looks_like_decl_after_reg_modifier(p: &Parser) -> bool {
+    let leading = match p.peek() {
+        TokenKind::Ident(s) => s.clone(),
+        _ => return false,
+    };
+    let mut i = 1usize;
+    if leading == "reg" {
+        if let TokenKind::Ident(s) = p.peek_at(i) {
+            if lookup_keyword(s).is_none() && !matches!(s.as_str(), "reg" | "noreg") {
+                i += 1;
+            }
+        }
+    }
+    loop {
+        match p.peek_at(i) {
+            TokenKind::Ident(s) => match lookup_keyword(s) {
+                Some(Keyword::Static)
+                | Some(Keyword::Public)
+                | Some(Keyword::Interrupt)
+                | Some(Keyword::Extern)
+                | Some(Keyword::ExternUnderscore)
+                | Some(Keyword::Import)
+                | Some(Keyword::ImportUnderscore)
+                | Some(Keyword::Intern)
+                | Some(Keyword::Lock)
+                | Some(Keyword::Lastclass)
+                | Some(Keyword::Argpop)
+                | Some(Keyword::Noargpop)
+                | Some(Keyword::Nostkchk) => { i += 1; continue; }
+                _ if matches!(s.as_str(), "reg" | "noreg") => { i += 1; continue; }
+                _ => break,
+            },
+            _ => break,
+        }
+    }
+    if let TokenKind::Ident(s) = p.peek_at(i) {
+        match lookup_keyword(s) {
+            Some(Keyword::U0) | Some(Keyword::I0) | Some(Keyword::U8) | Some(Keyword::I8)
+            | Some(Keyword::Bool) | Some(Keyword::U16) | Some(Keyword::I16)
+            | Some(Keyword::U32) | Some(Keyword::I32) | Some(Keyword::U64)
+            | Some(Keyword::I64) | Some(Keyword::F64)
+            | Some(Keyword::Class) | Some(Keyword::Union) => return true,
+            None => {
+                let j = i + 1;
+                return matches!(p.peek_at(j), TokenKind::Star | TokenKind::Ident(_));
+            }
+            _ => return false,
+        }
+    }
+    false
 }
 
 fn has_modifier(mods: &[Modifier], m: Modifier) -> bool {
