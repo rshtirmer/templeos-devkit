@@ -13,7 +13,7 @@
 //! passing — and additional assertions on Expr internals can be added.
 
 use holyc_parser::lex::lex;
-use holyc_parser::parse::ast::{CaseValue, Stmt, StmtKind};
+use holyc_parser::parse::ast::{CaseValue, ExprKind, Stmt, StmtKind};
 use holyc_parser::parse::parser::{ParseConfig, Parser};
 use holyc_parser::parse::stmt::parse_statement;
 
@@ -154,6 +154,99 @@ fn for_structure_empty_init() {
             }
             other => panic!("expected For, got {:?}", other),
         }
+    }
+}
+
+#[test]
+fn for_comma_in_init_and_update() {
+    // HolyC accepts comma-operator expression lists in both the init
+    // and update slots: `for (i = 0, j = 10; i < n; i++, j--) {}`.
+    let (s, rules) = parse_one_stmt("for (i = 0, j = 10; i < n; i++, j--) {}");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::For { init, cond, update, .. } => {
+            // init should be a Comma of two assigns, wrapped in
+            // StmtKind::Expr.
+            let init_stmt = init.expect("init present");
+            match init_stmt.kind {
+                StmtKind::Expr(e) => match e.kind {
+                    ExprKind::Comma(items) => assert_eq!(items.len(), 2),
+                    other => panic!("expected Comma init, got {:?}", other),
+                },
+                other => panic!("expected Expr init, got {:?}", other),
+            }
+            assert!(cond.is_some());
+            // update should be a Comma of two postfix ops.
+            match update.expect("update present").kind {
+                ExprKind::Comma(items) => assert_eq!(items.len(), 2),
+                other => panic!("expected Comma update, got {:?}", other),
+            }
+        }
+        other => panic!("expected For, got {:?}", other),
+    }
+}
+
+#[test]
+fn for_comma_in_init_only() {
+    let (s, rules) = parse_one_stmt("for (a = 0, b = 0; a < 10; a++) {}");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::For { init, update, .. } => {
+            let init_stmt = init.expect("init present");
+            match init_stmt.kind {
+                StmtKind::Expr(e) => match e.kind {
+                    ExprKind::Comma(items) => assert_eq!(items.len(), 2),
+                    other => panic!("expected Comma init, got {:?}", other),
+                },
+                other => panic!("expected Expr init, got {:?}", other),
+            }
+            // update should be a single bare expression (not Comma).
+            let upd = update.expect("update present");
+            assert!(!matches!(upd.kind, ExprKind::Comma(_)),
+                "expected non-Comma single update");
+        }
+        other => panic!("expected For, got {:?}", other),
+    }
+}
+
+#[test]
+fn for_comma_in_update_only() {
+    let (s, rules) = parse_one_stmt("for (i = 0; i < n; i++, j--) {}");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::For { init, update, .. } => {
+            // init bare-expr, not Comma.
+            let init_stmt = init.expect("init present");
+            match init_stmt.kind {
+                StmtKind::Expr(e) => assert!(!matches!(e.kind, ExprKind::Comma(_))),
+                other => panic!("expected Expr init, got {:?}", other),
+            }
+            match update.expect("update present").kind {
+                ExprKind::Comma(items) => assert_eq!(items.len(), 2),
+                other => panic!("expected Comma update, got {:?}", other),
+            }
+        }
+        other => panic!("expected For, got {:?}", other),
+    }
+}
+
+#[test]
+fn for_single_expr_clauses_regression() {
+    // Single-expression init and update — must still parse as bare
+    // expressions, not Comma-wrapped.
+    let (s, rules) = parse_one_stmt("for (i = 0; i < n; i++) {}");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match s.unwrap().kind {
+        StmtKind::For { init, update, .. } => {
+            let init_stmt = init.expect("init present");
+            match init_stmt.kind {
+                StmtKind::Expr(e) => assert!(!matches!(e.kind, ExprKind::Comma(_))),
+                other => panic!("expected Expr init, got {:?}", other),
+            }
+            let upd = update.expect("update present");
+            assert!(!matches!(upd.kind, ExprKind::Comma(_)));
+        }
+        other => panic!("expected For, got {:?}", other),
     }
 }
 
