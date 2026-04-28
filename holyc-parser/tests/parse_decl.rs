@@ -684,6 +684,107 @@ fn offset_as_global_var() {
     }
 }
 
+// -------- per-declarator pointer prefix in comma-decl lists --------
+//
+// HolyC accepts `U8 *src = a, *dst = b;` — each declarator carries
+// its own optional `*` re-prefix and its own optional initializer,
+// independent of the base type's declared pointer depth. Surfaced
+// during kernel-corpus audit (Bucket B1).
+
+#[test]
+fn global_multi_decl_per_declarator_pointer_prefix() {
+    let (m, rules) = parse_top("U8 *src = sa, *dst = da;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::GlobalDeclList(v) => {
+            assert_eq!(v.len(), 2);
+            assert_eq!(v[0].name, "src");
+            assert_eq!(v[1].name, "dst");
+            assert!(matches!(v[0].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 1 }));
+            assert!(matches!(v[1].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 1 }));
+            assert!(v[0].init.is_some());
+            assert!(v[1].init.is_some());
+        }
+        other => panic!("expected GlobalDeclList, got {other:?}"),
+    }
+}
+
+#[test]
+fn global_multi_decl_mixed_init_uninit_scalars() {
+    let (m, rules) = parse_top("F64 a = 1.0, b = 2.0, c;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::GlobalDeclList(v) => {
+            assert_eq!(v.len(), 3);
+            assert!(v[0].init.is_some());
+            assert!(v[1].init.is_some());
+            assert!(v[2].init.is_none());
+            for d in v {
+                assert!(matches!(d.ty, TypeRef::Prim { ty: PrimType::F64, pointer_depth: 0 }));
+            }
+        }
+        other => panic!("expected GlobalDeclList, got {other:?}"),
+    }
+}
+
+#[test]
+fn global_multi_decl_per_declarator_pointer_depth_varies() {
+    // I64 *p, **pp;  — base parses as I64*, second declarator adds
+    // a star to become I64**.
+    let (m, rules) = parse_top("I64 *p, **pp;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::GlobalDeclList(v) => {
+            assert_eq!(v.len(), 2);
+            assert!(matches!(v[0].ty, TypeRef::Prim { pointer_depth: 1, .. }));
+            assert!(matches!(v[1].ty, TypeRef::Prim { pointer_depth: 2, .. }));
+        }
+        other => panic!("expected GlobalDeclList, got {other:?}"),
+    }
+}
+
+#[test]
+fn global_multi_decl_pointer_then_scalar() {
+    // First declarator is a pointer, second is plain — confirms the
+    // per-declarator `*` does NOT bleed onto subsequent declarators.
+    let (m, rules) = parse_top("U8 *a, b;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::GlobalDeclList(v) => {
+            assert_eq!(v.len(), 2);
+            assert!(matches!(v[0].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 1 }));
+            assert!(matches!(v[1].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 0 }));
+        }
+        other => panic!("expected GlobalDeclList, got {other:?}"),
+    }
+}
+
+#[test]
+fn local_multi_decl_per_declarator_pointer_prefix() {
+    let (decls, rules) = parse_local_only("U8 *src = sa, *dst = da;");
+    let decls = decls.expect("expected local decl");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    assert_eq!(decls.len(), 2);
+    assert!(matches!(decls[0].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 1 }));
+    assert!(matches!(decls[1].ty, TypeRef::Prim { ty: PrimType::U8, pointer_depth: 1 }));
+    assert!(decls[0].init.is_some() && decls[1].init.is_some());
+}
+
+#[test]
+fn class_member_multi_decl_per_declarator_pointer_prefix() {
+    let (m, rules) = parse_top("class Foo { U8 *a, *b, c; };");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Class(c) => {
+            assert_eq!(c.members.len(), 3);
+            assert!(matches!(c.members[0].ty, TypeRef::Prim { pointer_depth: 1, .. }));
+            assert!(matches!(c.members[1].ty, TypeRef::Prim { pointer_depth: 1, .. }));
+            assert!(matches!(c.members[2].ty, TypeRef::Prim { pointer_depth: 0, .. }));
+        }
+        other => panic!("expected Class, got {other:?}"),
+    }
+}
+
 // -------- silence unused import warning --------
 #[allow(dead_code)]
 fn _force_use() {
