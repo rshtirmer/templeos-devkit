@@ -55,21 +55,35 @@ pub fn lint_modules(modules: &[(String, Module)]) -> Vec<Diag> {
 // ============================================================
 
 /// A lightweight type table covering the kinds of declarations the
-/// lint pass needs to know about: function return types, variable
-/// types, and `#define` bodies that look like an integer literal.
-/// Class declarations are recorded by name (so we can spot user-
-/// defined types) but with no further info.
+/// lint pass needs to know about: function return types + signatures,
+/// variable types, and `#define` bodies that look like an integer
+/// literal. Class declarations are recorded by name (so we can spot
+/// user-defined types) but with no further info.
 pub struct TypeContext {
     /// global name → declared type (where known)
     globals: HashMap<String, TypeRef>,
+    /// function name → callable signature (params + variadic flag).
+    /// Lives alongside `globals`; the type entry stores the return
+    /// type so a call-as-expression resolves correctly, while this
+    /// table is consulted for arity checks.
+    functions: HashMap<String, FnSignature>,
     /// declared user-defined classes / unions (name set)
     classes: std::collections::HashSet<String>,
+}
+
+#[derive(Clone, Debug)]
+struct FnSignature {
+    /// Number of fixed (non-variadic) parameters.
+    num_params: usize,
+    /// True if the parameter list ends in `...`.
+    variadic: bool,
 }
 
 impl TypeContext {
     pub fn new() -> Self {
         Self {
             globals: HashMap::new(),
+            functions: HashMap::new(),
             classes: std::collections::HashSet::new(),
         }
     }
@@ -82,6 +96,19 @@ impl TypeContext {
                     // of its name (close enough for "what does
                     // calling this give me?").
                     self.globals.insert(f.name.clone(), f.ret_type.clone());
+                    let mut variadic = false;
+                    let mut num_params = 0;
+                    for p in &f.params {
+                        if p.variadic {
+                            variadic = true;
+                        } else {
+                            num_params += 1;
+                        }
+                    }
+                    self.functions.insert(
+                        f.name.clone(),
+                        FnSignature { num_params, variadic },
+                    );
                 }
                 TopItem::Variable(v) => {
                     self.globals.insert(v.name.clone(), v.ty.clone());
@@ -359,6 +386,7 @@ impl<'a> LintWalker<'a> {
             }
             ExprKind::Member(x, _) | ExprKind::Arrow(x, _) => self.walk_expr(x),
             ExprKind::Call(callee, args) => {
+                self.check_arity(callee, args, e.span.0);
                 self.walk_expr(callee);
                 for a in args { self.walk_expr(a); }
             }
@@ -366,6 +394,65 @@ impl<'a> LintWalker<'a> {
             ExprKind::Comma(items) => {
                 for x in items { self.walk_expr(x); }
             }
+        }
+    }
+
+    /// Arity check: when calling a known global function, the arg
+    /// count must match its declared parameter count. Variadic
+    /// functions skip the upper-bound check (any extra args are OK)
+    /// but still require at least `num_params` fixed args.
+    ///
+    /// Calls through function pointers, member access, or to
+    /// undeclared functions are skipped — we have no signature.
+    fn check_arity(&mut self, callee: &Expr, args: &[Expr], call_pos: crate::lex::Pos) {
+        let name = match &callee.kind {
+            ExprKind::Ident(n) => n,
+            _ => return,
+        };
+        // Resolve: locals can shadow globals (a local of the same
+        // name as a function is rare but possible — skip arity if
+        // shadowed since we don't know the local's signature).
+        if self.lookup_local(name).is_some() {
+            return;
+        }
+        let sig = match self.tctx.functions.get(name) {
+            Some(s) => s,
+            None => return,
+        };
+        let provided = args.len();
+        if sig.variadic {
+            if provided < sig.num_params {
+                self.out.push(Diag {
+                    file: self.file.to_string(),
+                    line: call_pos.line,
+                    col: call_pos.col,
+                    severity: Severity::Error,
+                    rule: "arity-mismatch",
+                    message: format!(
+                        "`{name}` declared with {n_decl} required parameter{plural} (variadic); \
+                         called with {provided}",
+                        name = name,
+                        n_decl = sig.num_params,
+                        plural = if sig.num_params == 1 { "" } else { "s" },
+                        provided = provided,
+                    ),
+                });
+            }
+        } else if provided != sig.num_params {
+            self.out.push(Diag {
+                file: self.file.to_string(),
+                line: call_pos.line,
+                col: call_pos.col,
+                severity: Severity::Error,
+                rule: "arity-mismatch",
+                message: format!(
+                    "`{name}` declared with {n_decl} parameter{plural}, called with {provided}",
+                    name = name,
+                    n_decl = sig.num_params,
+                    plural = if sig.num_params == 1 { "" } else { "s" },
+                    provided = provided,
+                ),
+            });
         }
     }
 

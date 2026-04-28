@@ -248,6 +248,105 @@ U0 F() {
     );
 }
 
+// ---------- arity-mismatch ----------
+
+#[test]
+fn arity_too_few_flagged() {
+    use holyc_parser::diag::Severity;
+    let (m, _) = holyc_parser::parse::parse_module(
+        "test",
+        "U0 Print2(U8 *a, U8 *b) {} U0 F() { Print2(\"x\"); }",
+        holyc_parser::parse::ParseConfig::default(),
+    );
+    let diags = holyc_parser::lint::lint_module("test", &m);
+    let errs: Vec<_> = diags
+        .iter()
+        .filter(|d| matches!(d.severity, Severity::Error))
+        .map(|d| d.rule)
+        .collect();
+    assert!(errs.contains(&"arity-mismatch"), "got {errs:?}");
+}
+
+#[test]
+fn arity_too_many_flagged() {
+    let r = rules(r#"
+U0 Print1(U8 *m) {}
+U0 F() { Print1("x", "y"); }
+"#);
+    assert!(r.contains(&"arity-mismatch"), "got {r:?}");
+}
+
+#[test]
+fn arity_correct_clean() {
+    let r = rules(r#"
+U0 Print1(U8 *m) {}
+U0 F() { Print1("x"); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "false positive: {r:?}");
+}
+
+#[test]
+fn arity_zero_args_clean() {
+    let r = rules(r#"
+U0 NoArg() {}
+U0 F() { NoArg(); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "false positive: {r:?}");
+}
+
+#[test]
+fn arity_zero_args_flagged_when_called_with_one() {
+    let r = rules(r#"
+U0 NoArg() {}
+U0 F() { NoArg("oops"); }
+"#);
+    assert!(r.contains(&"arity-mismatch"), "got {r:?}");
+}
+
+#[test]
+fn arity_variadic_accepts_extras() {
+    // `...` ellipsis at end of param list is variadic — extras OK.
+    let r = rules(r#"
+U0 Print(U8 *fmt, ...) {}
+U0 F() { Print("hi"); Print("hi %d", 42); Print("hi %d %s", 42, "x"); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "variadic should accept any: {r:?}");
+}
+
+#[test]
+fn arity_variadic_still_requires_fixed_args() {
+    let r = rules(r#"
+U0 Print(U8 *fmt, ...) {}
+U0 F() { Print(); }
+"#);
+    assert!(r.contains(&"arity-mismatch"), "variadic must require fixed: {r:?}");
+}
+
+#[test]
+fn arity_unknown_function_skipped() {
+    // Calls to functions not declared in any input file aren't
+    // arity-checked — they're builtins or yet-unported decls.
+    let r = rules(r#"
+U0 F() { CommPrint(1, "%s", "hi"); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "unknown call: {r:?}");
+}
+
+#[test]
+fn arity_local_shadow_skipped() {
+    // If a local of the same name shadows a function declaration,
+    // we don't know the local's signature, so skip the arity check.
+    let r = rules(r#"
+U0 Foo(U8 *a) {}
+U0 G() {
+  U8 *Foo;
+  Foo("ignored", "extra");
+}
+"#);
+    // No arity-mismatch — local shadow.
+    assert!(!r.contains(&"arity-mismatch"), "local-shadowed: {r:?}");
+}
+
 #[test]
 fn f64_bitwise_or_also_flagged() {
     let r = warnings_only(r#"

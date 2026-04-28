@@ -290,7 +290,7 @@ fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
         let cls = parse_class_or_union(p, /*is_extern=*/ has_modifier(&modifiers, Modifier::Extern))?;
         return Some(TopItem::Class(cls));
     }
-    let ty = match super::type_::parse_type_allow_named(p) {
+    let (ty, inline_name, inline_dims) = match super::type_::parse_type_allow_named_with_inline_decl(p) {
         Some(t) => t,
         None => {
             // Recover: skip a token to make progress
@@ -298,6 +298,26 @@ fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
             return None;
         }
     };
+    // If the type parser captured a name embedded inside a
+    // function-pointer declarator (e.g. `U0 (*cb[8])()`), use that as
+    // the variable name and skip the trailing-ident read. Such a
+    // declarator is always a variable holding a fn pointer (or array
+    // of fn pointers), never a function definition.
+    if let Some(embedded) = inline_name {
+        let array_dims = inline_dims;
+        let init = parse_initializer_opt(p);
+        let first = VarDecl {
+            modifiers: modifiers.clone(),
+            ty: ty.clone(),
+            name: embedded,
+            array_dims,
+            init,
+            reg_name: None,
+            span: (start, p.current_pos()),
+        };
+        p.eat(&TokenKind::Semicolon);
+        return Some(TopItem::Variable(first));
+    }
     // First declarator name.
     let name = match p.peek().clone() {
         TokenKind::Ident(s) if lookup_keyword(&s).is_none() => {

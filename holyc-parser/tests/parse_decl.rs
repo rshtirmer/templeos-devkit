@@ -447,6 +447,55 @@ fn aggregate_init_smoke() {
     }
 }
 
+// -------- function-pointer globals (with and without array dim) --------
+
+#[test]
+fn global_fnptr_simple() {
+    // `U0 (*cb)();` — a single function pointer at file scope.
+    let (m, rules) = parse_top("U0 (*cb)();");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    assert_eq!(m.items.len(), 1);
+    match &m.items[0] {
+        TopItem::Variable(v) => {
+            assert_eq!(v.name, "cb");
+            assert!(v.array_dims.is_empty());
+        }
+        other => panic!("expected Variable, got {:?}", other),
+    }
+}
+
+#[test]
+fn global_fnptr_array() {
+    // `U0 (*pr_builtins[8])();` — an array of fn pointers. The
+    // declarator name and array dim are embedded inside the
+    // function-pointer parens.
+    let (m, rules) = parse_top("U0 (*pr_builtins[8])();");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    assert_eq!(m.items.len(), 1);
+    match &m.items[0] {
+        TopItem::Variable(v) => {
+            assert_eq!(v.name, "pr_builtins");
+            assert_eq!(v.array_dims.len(), 1);
+            assert!(v.array_dims[0].is_some());
+        }
+        other => panic!("expected Variable, got {:?}", other),
+    }
+}
+
+#[test]
+fn global_fnptr_array_with_init() {
+    let (m, rules) = parse_top(
+        "U0 B0() {} U0 B1() {} U0 (*tbl[2])() = {&B0, &B1};",
+    );
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let var = m.items.iter().find_map(|it| match it {
+        TopItem::Variable(v) if v.name == "tbl" => Some(v),
+        _ => None,
+    }).expect("tbl variable");
+    assert_eq!(var.array_dims.len(), 1);
+    assert!(matches!(var.init, Some(Initializer::Aggregate(_))));
+}
+
 // -------- silence unused import warning --------
 #[allow(dead_code)]
 fn _force_use() {
