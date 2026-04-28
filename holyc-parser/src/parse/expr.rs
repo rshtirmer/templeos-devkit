@@ -563,8 +563,21 @@ fn parse_postfix(p: &mut Parser, mut lhs: Expr) -> Option<Expr> {
                         let mut args = Vec::new();
                         if !matches!(p.peek(), TokenKind::RParen) {
                             loop {
-                                let arg = parse_assign(p)?;
-                                args.push(arg);
+                                // Allow an empty slot — `f(, x)`, `f(a, , c)`,
+                                // `f(a,)`. HolyC reads this as "use the
+                                // declared default value for that parameter."
+                                // Idiomatic in TempleOS kernel code (see
+                                // `CtrlAltCBSet('C', &h, "Ctrl+C", , TRUE)`).
+                                if matches!(p.peek(), TokenKind::Comma | TokenKind::RParen) {
+                                    let slot_pos = p.current_pos();
+                                    args.push(Expr {
+                                        kind: ExprKind::DefaultArgSlot,
+                                        span: (slot_pos, slot_pos),
+                                    });
+                                } else {
+                                    let arg = parse_assign(p)?;
+                                    args.push(arg);
+                                }
                                 if matches!(p.peek(), TokenKind::Comma) {
                                     p.bump();
                                     continue;

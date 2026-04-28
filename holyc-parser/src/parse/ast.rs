@@ -64,6 +64,14 @@ pub enum ExprKind {
     Member(Box<Expr>, String),  // a.b
     Arrow(Box<Expr>, String),   // a->b
     Call(Box<Expr>, Vec<Expr>),
+    /// Empty slot in a call's argument list — `f(a, , c)` or `f(a,)`.
+    /// HolyC allows omitting an argument when the callee declares a
+    /// default value for that parameter; the empty slot means "use
+    /// the default." Represented as its own expression so the args
+    /// vector preserves positional alignment with the callee's
+    /// parameter list. Only ever appears as a direct child of
+    /// `ExprKind::Call`'s args.
+    DefaultArgSlot,
 
     /// HolyC postfix typecast: `expr (TYPE)`.
     HolycCast(Box<Expr>, TypeRef),

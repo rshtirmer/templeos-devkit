@@ -304,6 +304,27 @@ U0 F() { NoArg("oops"); }
 }
 
 #[test]
+fn arity_default_arg_slot_counts_as_provided() {
+    // `f(a, , c)` — empty slot means "use the declared default."
+    // The slot is a provided argument as far as arity goes; the
+    // call's len matches the parameter count exactly.
+    let r = rules(r#"
+U0 Three(U8 *a, U8 *b = "x", U8 *c) {}
+U0 F() { Three("a", , "c"); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "default-arg slot must count: {r:?}");
+}
+
+#[test]
+fn arity_trailing_default_arg_slot_counts_as_provided() {
+    let r = rules(r#"
+U0 Two(U8 *a, U8 *b = "x") {}
+U0 F() { Two("a",); }
+"#);
+    assert!(!r.contains(&"arity-mismatch"), "trailing default slot must count: {r:?}");
+}
+
+#[test]
 fn arity_variadic_accepts_extras() {
     // `...` ellipsis at end of param list is variadic — extras OK.
     let r = rules(r#"
