@@ -86,17 +86,28 @@ pub fn parse_type_allow_named(p: &mut Parser) -> Option<TypeRef> {
     parse_type_inner(p, /*allow_named=*/ true)
 }
 
-/// Like `parse_type_allow_named` but also returns any name that was
-/// embedded inside a function-pointer declarator (e.g. the `cb` in
-/// `U0 (*cb)(I64 x)`). Callers that put a name AFTER the type
+/// Like `parse_type_allow_named` but also returns any name AND any
+/// array dimensions embedded inside a function-pointer declarator
+/// (e.g. the `cb` in `U0 (*cb)(I64 x)` or the `cb[8]` in
+/// `U0 (*cb[8])()`). Callers that put a name AFTER the type
 /// (variable / parameter / class-member positions) consult the
-/// embedded name first and only read a trailing ident if it's None.
+/// embedded name first and only read a trailing ident if it's None;
+/// embedded array dims are likewise the declarator's array_dims.
 pub fn parse_type_allow_named_with_inline_name(p: &mut Parser) -> Option<(TypeRef, Option<String>)> {
-    let snap = p.diags.len();
+    let (ty, name, _dims) = parse_type_allow_named_with_inline_decl(p)?;
+    Some((ty, name))
+}
+
+/// Full version: type + embedded name + embedded array dims.
+pub fn parse_type_allow_named_with_inline_decl(
+    p: &mut Parser,
+) -> Option<(TypeRef, Option<String>, Vec<Option<crate::parse::ast::Expr>>)> {
     let mut inline_name: Option<String> = None;
-    let ty = parse_type_inner_with_name(p, /*allow_named=*/ true, &mut inline_name)?;
-    let _ = snap;
-    Some((ty, inline_name))
+    let mut inline_dims: Vec<Option<crate::parse::ast::Expr>> = Vec::new();
+    let ty = parse_type_inner_with_name_and_dims(
+        p, /*allow_named=*/ true, &mut inline_name, &mut inline_dims,
+    )?;
+    Some((ty, inline_name, inline_dims))
 }
 
 fn parse_type_inner(p: &mut Parser, allow_named: bool) -> Option<TypeRef> {
@@ -108,6 +119,16 @@ fn parse_type_inner_with_name(
     p: &mut Parser,
     allow_named: bool,
     inline_name: &mut Option<String>,
+) -> Option<TypeRef> {
+    let mut sink_dims = Vec::new();
+    parse_type_inner_with_name_and_dims(p, allow_named, inline_name, &mut sink_dims)
+}
+
+fn parse_type_inner_with_name_and_dims(
+    p: &mut Parser,
+    allow_named: bool,
+    inline_name: &mut Option<String>,
+    inline_dims: &mut Vec<Option<crate::parse::ast::Expr>>,
 ) -> Option<TypeRef> {
     let pos = p.current_pos();
     let base: TypeRef = match p.peek().clone() {
@@ -152,12 +173,12 @@ fn parse_type_inner_with_name(
     let stars = consume_stars(p);
     bump_pointer_depth(&mut ty, stars);
 
-    // Function-pointer form: `Ret (*name)(args)`. The optional embedded
-    // name (`name` in `U0 (*cb)(I64)`) is plumbed back to the caller so
-    // var/param/field positions can use it without expecting a trailing
-    // ident that's already been consumed.
+    // Function-pointer form: `Ret (*name)(args)` or
+    // `Ret (*name[N])(args)` for arrays of fn-pointers. Both inline
+    // name and inline array dims are plumbed back to the caller so
+    // var/param/field positions can use them as the declarator info.
     if matches!(p.peek(), TokenKind::LParen) {
-        if let Some(fnref) = try_parse_function_pointer(p, ty.clone(), inline_name) {
+        if let Some(fnref) = try_parse_function_pointer(p, ty.clone(), inline_name, inline_dims) {
             return Some(fnref);
         }
     }
@@ -189,14 +210,17 @@ fn bump_pointer_depth(ty: &mut TypeRef, n: u32) {
     }
 }
 
-/// Try to parse `(*name)(args)`. The cursor is at the `(`. Returns
-/// `None` and rewinds if the pattern doesn't match. If a name appears
-/// in the `(*name)` slot it's stored in `inline_name` so the caller
-/// (var / param / field decl) can use it as the declarator.
+/// Try to parse `(*name)(args)` or `(*name[N])(args)`. The cursor is
+/// at the `(`. Returns `None` and rewinds if the pattern doesn't
+/// match. If a name appears in the `(*name…)` slot it's stored in
+/// `inline_name`; any `[N]` dims after the name are stored in
+/// `inline_dims`. Callers (var / param / field decl) consume them
+/// as the declarator's name and array_dims respectively.
 fn try_parse_function_pointer(
     p: &mut Parser,
     ret: TypeRef,
     inline_name: &mut Option<String>,
+    inline_dims: &mut Vec<Option<crate::parse::ast::Expr>>,
 ) -> Option<TypeRef> {
     let cp = p.checkpoint();
     if !p.eat(&TokenKind::LParen) { return None; }
@@ -212,6 +236,21 @@ fn try_parse_function_pointer(
         if lookup_keyword(&s).is_none() {
             *inline_name = Some(s);
             p.bump();
+        }
+    }
+    // Optional array dims `[N]` (zero or more) — for arrays of
+    // function pointers like `U0 (*cb[8])()`.
+    while matches!(p.peek(), TokenKind::LBracket) {
+        p.bump();
+        if matches!(p.peek(), TokenKind::RBracket) {
+            inline_dims.push(None);
+            p.bump();
+        } else {
+            let dim = crate::parse::expr::parse_expression(p);
+            inline_dims.push(dim);
+            if !p.eat(&TokenKind::RBracket) {
+                p.error_at(p.current_pos(), "expecting-rbracket", "Missing ']' at ");
+            }
         }
     }
     if !p.eat(&TokenKind::RParen) {

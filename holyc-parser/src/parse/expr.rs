@@ -29,7 +29,7 @@
 
 use crate::lex::{Keyword, TokenKind, lookup_keyword};
 use crate::parse::ast::{
-    BinOp, Expr, ExprKind, PostfixOp, PrefixOp, PrimType, SizeofArg, Span, TypeRef,
+    BinOp, Expr, ExprKind, PostfixOp, PrefixOp, SizeofArg, Span, TypeRef,
 };
 use crate::parse::parser::Parser;
 
