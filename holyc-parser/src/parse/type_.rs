@@ -199,7 +199,24 @@ fn consume_stars(p: &mut Parser) -> u32 {
     n.min(PTR_STARS_NUM)
 }
 
-fn bump_pointer_depth(ty: &mut TypeRef, n: u32) {
+/// Return a clone of `ty` with `pointer_depth` reset to 0. Used by
+/// the comma-decl-list machinery: in `U8 *a, *b;` the type parser
+/// greedily attaches the first declarator's stars to the base type,
+/// but every subsequent declarator's effective type starts from the
+/// "naked" base (before any per-declarator stars).
+pub(crate) fn type_without_pointer_depth(ty: &TypeRef) -> TypeRef {
+    let mut t = ty.clone();
+    match &mut t {
+        TypeRef::Prim { pointer_depth, .. }
+        | TypeRef::Named { pointer_depth, .. }
+        | TypeRef::Func { pointer_depth, .. } => {
+            *pointer_depth = 0;
+        }
+    }
+    t
+}
+
+pub(crate) fn bump_pointer_depth(ty: &mut TypeRef, n: u32) {
     if n == 0 { return; }
     match ty {
         TypeRef::Prim { pointer_depth, .. }

@@ -392,6 +392,8 @@ fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
     let mut decls = vec![first.clone()];
     while p.eat(&TokenKind::Comma) {
         let dstart = p.current_pos();
+        // Per-declarator pointer prefix (`U8 *a, *b;`).
+        let stars = eat_declarator_stars(p);
         let dname = match p.peek().clone() {
             TokenKind::Ident(s) if lookup_keyword(&s).is_none() => { p.bump(); s }
             _ => {
@@ -403,7 +405,7 @@ fn parse_global_decl(p: &mut Parser) -> Option<TopItem> {
         let init = parse_initializer_opt(p);
         decls.push(VarDecl {
             modifiers: modifiers.clone(),
-            ty: ty.clone(),
+            ty: subsequent_declarator_type(&ty, stars),
             name: dname,
             array_dims,
             init,
@@ -489,6 +491,30 @@ fn parse_modifiers(p: &mut Parser) -> Vec<Modifier> {
 
 fn has_modifier(mods: &[Modifier], m: Modifier) -> bool {
     mods.iter().any(|x| *x == m)
+}
+
+/// Eat zero or more leading `*` tokens at the start of a declarator
+/// (used inside comma-separated decl lists to handle per-declarator
+/// pointer prefixes like `U8 *a, *b, **c;`). Returns the count of
+/// stars consumed.
+fn eat_declarator_stars(p: &mut Parser) -> u32 {
+    let mut n: u32 = 0;
+    while matches!(p.peek(), TokenKind::Star) {
+        p.bump();
+        n += 1;
+    }
+    n
+}
+
+/// Build a 2nd-or-later declarator's type. The first declarator's
+/// stars were greedily consumed by the type parser and live on
+/// `base.pointer_depth`; subsequent declarators in the same comma
+/// list start from the *naked* base and add only their own star
+/// count. `U8 *a, **b, c;` → a:U8*, b:U8**, c:U8.
+fn subsequent_declarator_type(base: &TypeRef, own_stars: u32) -> TypeRef {
+    let mut t = super::type_::type_without_pointer_depth(base);
+    super::type_::bump_pointer_depth(&mut t, own_stars);
+    t
 }
 
 fn parse_array_dims(p: &mut Parser) -> Vec<Option<Expr>> {
@@ -677,6 +703,8 @@ fn parse_class_body(p: &mut Parser) -> Vec<VarDecl> {
             });
             while p.eat(&TokenKind::Comma) {
                 let dstart = p.current_pos();
+                // Per-declarator pointer prefix (`U8 *a, *b;`).
+                let stars = eat_declarator_stars(p);
                 let nm = match p.peek().clone() {
                     TokenKind::Ident(s) => { p.bump(); s }
                     _ => break,
@@ -685,7 +713,7 @@ fn parse_class_body(p: &mut Parser) -> Vec<VarDecl> {
                 let init = parse_initializer_opt(p);
                 out.push(VarDecl {
                     modifiers: modifiers.clone(),
-                    ty: ty.clone(),
+                    ty: subsequent_declarator_type(&ty, stars),
                     name: nm,
                     array_dims,
                     init,
@@ -714,8 +742,14 @@ pub fn parse_local_decl(p: &mut Parser) -> Option<Vec<VarDecl>> {
         None => return None,
     };
     let mut decls = Vec::new();
+    let mut first = true;
     loop {
         let dstart = p.current_pos();
+        // Per-declarator pointer prefix is only meaningful on the
+        // 2nd+ iteration; on the first, leading `*`s were already
+        // absorbed into the base type by the type parser.
+        let extra_stars = if first { None } else { Some(eat_declarator_stars(p)) };
+        first = false;
         let name = match p.peek().clone() {
             TokenKind::Ident(s) if lookup_keyword(&s).is_none() => {
                 if super::type_::is_reserved_name(&s) {
@@ -746,9 +780,13 @@ pub fn parse_local_decl(p: &mut Parser) -> Option<Vec<VarDecl>> {
         };
         let array_dims = parse_array_dims(p);
         let init = parse_initializer_opt(p);
+        let dty = match extra_stars {
+            None => ty.clone(),
+            Some(n) => subsequent_declarator_type(&ty, n),
+        };
         decls.push(VarDecl {
             modifiers: modifiers.clone(),
-            ty: ty.clone(),
+            ty: dty,
             name,
             array_dims,
             init,
