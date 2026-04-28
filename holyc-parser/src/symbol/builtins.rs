@@ -46,7 +46,12 @@ const BUILTINS: &[&str] = &[
     "Sin", "Cos", "Tan", "Sqrt", "Pow",
     "Abs", "AbsI64", "AbsF64",
     "Floor", "Ceil", "Round",
-    "Atan", "Atan2", "Exp", "Log", "Log2", "Log10",
+    // TempleOS spells these as `ATan` / `Pow10` / etc. (camelcase
+    // with capital second letter on abbreviations). Source of truth:
+    // `Kernel/KernelB.HH` in cia-foundation/TempleOS — e.g.
+    //   public _intern IC_ATAN F64 ATan(F64 d);
+    // There is no `Atan2` in TempleOS; only single-arg `ATan`.
+    "ATan", "Exp", "Log", "Log2", "Log10",
     "Pow10I64",
     "Min", "Max",
     "Rand", "RandU16", "RandU32", "RandU64",
