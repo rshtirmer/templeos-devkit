@@ -13,7 +13,7 @@
 //! passing — and additional assertions on Expr internals can be added.
 
 use holyc_parser::lex::lex;
-use holyc_parser::parse::ast::{CaseValue, ExprKind, Stmt, StmtKind};
+use holyc_parser::parse::ast::{CaseValue, ExprKind, PpDirective, Stmt, StmtKind};
 use holyc_parser::parse::parser::{ParseConfig, Parser};
 use holyc_parser::parse::stmt::parse_statement;
 
@@ -533,5 +533,115 @@ fn case_value_followed_by_colon_struct_smoke() {
         if let StmtKind::Case(vals) = st.kind {
             assert_eq!(vals.len(), 1);
         }
+    }
+}
+
+// -------- mid-body preprocessor directives --------
+//
+// `#`-lines (`#ifdef`/`#endif`/`#define`/...) are accepted inside
+// any `Vec<Stmt>` body — function body, block, for-body, switch-
+// body, try/catch, lock-body. They parse into the same `PpDirective`
+// shape as at top level, wrapped in `StmtKind::Preprocessor(...)`.
+// We don't expand `#ifdef`: both branches are preserved verbatim
+// as sibling statements in the surrounding block.
+
+fn block_stmts(s: &Stmt) -> &[Stmt] {
+    match &s.kind {
+        StmtKind::Block(v) => v.as_slice(),
+        k => panic!("expected Block, got {k:?}"),
+    }
+}
+
+#[test]
+fn preproc_ifdef_endif_inside_if_body() {
+    // Both `#ifdef` and `#endif` should appear in the AST, with the
+    // guarded statement preserved between them — no expansion.
+    let (s, rules) = parse_one_stmt(
+        "if (x) { #ifdef DEBUG\nprint(\"hi\");\n#endif\n}",
+    );
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let st = s.expect("if-stmt should parse");
+    let then_branch = match st.kind {
+        StmtKind::If { then_branch, .. } => then_branch,
+        k => panic!("expected If, got {k:?}"),
+    };
+    let body = block_stmts(&then_branch);
+    // Expect: [Preprocessor(Ifdef("DEBUG")), Expr(...), Preprocessor(EndIf)]
+    assert_eq!(body.len(), 3, "body = {body:?}");
+    match &body[0].kind {
+        StmtKind::Preprocessor(PpDirective::Ifdef(name)) => assert_eq!(name, "DEBUG"),
+        k => panic!("expected Preprocessor(Ifdef), got {k:?}"),
+    }
+    assert!(matches!(body[2].kind, StmtKind::Preprocessor(PpDirective::EndIf)));
+}
+
+#[test]
+fn preproc_if_inside_for_body() {
+    // Stub-expr may emit minor diags on `i = 0`/`i < 10`; we only
+    // care that the for-body's preprocessor directives parsed.
+    let (s, _rules) = parse_one_stmt(
+        "for (i = 0; i < 10; i++) { #ifdef FOO\ny();\n#endif\n}",
+    );
+    let st = s.expect("for-stmt should parse");
+    let body_stmt = match st.kind {
+        StmtKind::For { body, .. } => body,
+        k => panic!("expected For, got {k:?}"),
+    };
+    let body = block_stmts(&body_stmt);
+    // `#if FOO` parses as `Other { name: "if", ... }` since `#if` is
+    // not in our modeled directive set; what matters is that *some*
+    // Preprocessor stmt landed at index 0 and that the body also
+    // contains an `#endif` directive somewhere.
+    assert!(
+        matches!(body[0].kind, StmtKind::Preprocessor(_)),
+        "expected leading Preprocessor stmt, got {:?}",
+        body[0].kind,
+    );
+    assert!(
+        body.iter().any(|s| matches!(
+            &s.kind,
+            StmtKind::Preprocessor(PpDirective::EndIf),
+        )),
+        "expected an #endif somewhere in body, got {body:?}",
+    );
+}
+
+#[test]
+fn preproc_ifdef_inside_try_body() {
+    let (s, rules) = parse_one_stmt(
+        "try { x(); #ifdef BAR\ny();\n#endif\n} catch { z(); }",
+    );
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let st = s.expect("try-stmt should parse");
+    let (body, catch_body) = match st.kind {
+        StmtKind::Try { body, catch_body } => (body, catch_body),
+        k => panic!("expected Try, got {k:?}"),
+    };
+    // try-body: [Expr(x()), Preprocessor(Ifdef BAR), Expr(y()), Preprocessor(EndIf)]
+    assert_eq!(body.len(), 4, "try-body = {body:?}");
+    match &body[1].kind {
+        StmtKind::Preprocessor(PpDirective::Ifdef(name)) => assert_eq!(name, "BAR"),
+        k => panic!("expected Preprocessor(Ifdef BAR), got {k:?}"),
+    }
+    assert!(matches!(body[3].kind, StmtKind::Preprocessor(PpDirective::EndIf)));
+    // catch-body should be untouched.
+    assert_eq!(catch_body.len(), 1);
+}
+
+#[test]
+fn preproc_define_inside_block() {
+    // Bare `#define X 1` mid-block parses into a Preprocessor stmt.
+    let (s, rules) = parse_one_stmt("{ #define X 1\n}");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let body = match s.expect("block").kind {
+        StmtKind::Block(v) => v,
+        k => panic!("expected Block, got {k:?}"),
+    };
+    assert_eq!(body.len(), 1);
+    match &body[0].kind {
+        StmtKind::Preprocessor(PpDirective::Define { name, .. }) => {
+            assert_eq!(name, "X");
+        }
+        k => panic!("expected Preprocessor(Define X), got {k:?}"),
     }
 }

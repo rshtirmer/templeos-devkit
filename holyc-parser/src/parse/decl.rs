@@ -132,7 +132,7 @@ pub fn parse_top_item(p: &mut Parser) -> Option<TopItem> {
 // Preprocessor
 // ============================================================
 
-fn parse_preprocessor(p: &mut Parser) -> Option<PpDirective> {
+pub(crate) fn parse_preprocessor(p: &mut Parser) -> Option<PpDirective> {
     let _hash_pos = p.current_pos();
     p.bump(); // #
     let name = match p.peek().clone() {

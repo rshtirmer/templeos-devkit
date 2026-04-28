@@ -239,6 +239,10 @@ impl Resolver {
                 }
             }
             StmtKind::Goto(_) | StmtKind::Label(_) | StmtKind::Asm(_) | StmtKind::NoWarn(_) => {}
+            // Mid-body preprocessor directives — names inside `#ifdef`
+            // bodies, `#define` substitutions, etc. aren't validated
+            // (mirrors how `TopItem::Preprocessor` is handled).
+            StmtKind::Preprocessor(_) => {}
             StmtKind::Try { body, catch_body } => {
                 let mut inner = scope.child();
                 for s2 in body {

@@ -283,7 +283,10 @@ impl<'a> LintWalker<'a> {
             StmtKind::Empty | StmtKind::Break | StmtKind::Default
             | StmtKind::SubSwitchStart | StmtKind::SubSwitchEnd
             | StmtKind::Goto(_) | StmtKind::Label(_) | StmtKind::Asm(_)
-            | StmtKind::NoWarn(_) => {}
+            | StmtKind::NoWarn(_)
+            // Mid-body preprocessor directives are kept verbatim;
+            // we don't descend (mirrors `TopItem::Preprocessor`).
+            | StmtKind::Preprocessor(_) => {}
             StmtKind::Block(body) => {
                 self.enter_scope();
                 for s2 in body {
