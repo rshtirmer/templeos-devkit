@@ -284,15 +284,18 @@ fn parse_for(
     if !p.eat(&TokenKind::LParen) {
         p.error_at(p.current_pos(), "expecting-lparen", "Expecting '(' at ");
     }
-    // init slot. Either empty (`;`) or a stmt that ends with `;`.
+    // init slot. Either empty (`;`), a type-decl statement, or a
+    // comma-separated expression list terminated by `;`. HolyC accepts
+    // `for (i = 0, j = 10; ...; ...)` — both init and update clauses
+    // can be comma-operator expression lists.
     let init = if matches!(p.peek(), TokenKind::Semicolon) {
         p.bump();
         None
-    } else {
+    } else if super::type_::at_type(p) {
         // §5.4: at file scope, a type-decl in init is buggy in
         // TempleOS. We emit an error unless the bug-compat flag
         // `allow_for_decl_top_level` is set.
-        if at_file_scope && super::type_::at_type(p) && !p.config.allow_for_decl_top_level {
+        if at_file_scope && !p.config.allow_for_decl_top_level {
             let pos = p.current_pos();
             p.error_at(
                 pos,
@@ -302,6 +305,15 @@ fn parse_for(
         }
         let s = parse_statement(p);
         s.map(Box::new)
+    } else {
+        // Expression-statement form. Allow comma-operator list.
+        let init_start = p.current_pos();
+        let e = parse_for_clause_expr_list(p, init_start);
+        p.eat(&TokenKind::Semicolon);
+        e.map(|expr| Box::new(Stmt {
+            kind: StmtKind::Expr(expr),
+            span: (init_start, p.current_pos()),
+        }))
     };
     // cond slot.
     let cond = if matches!(p.peek(), TokenKind::Semicolon) {
@@ -312,11 +324,12 @@ fn parse_for(
         p.eat(&TokenKind::Semicolon);
         e
     };
-    // update slot — terminated by `)`.
+    // update slot — terminated by `)`. Allow comma-operator list.
     let update = if matches!(p.peek(), TokenKind::RParen) {
         None
     } else {
-        crate::parse::expr::parse_expression(p)
+        let upd_start = p.current_pos();
+        parse_for_clause_expr_list(p, upd_start)
     };
     if !p.eat(&TokenKind::RParen) {
         p.error_at(p.current_pos(), "missing-rparen", "Missing ')' at ");
@@ -324,6 +337,32 @@ fn parse_for(
     let body = Box::new(parse_statement(p)?);
     Some(Stmt {
         kind: StmtKind::For { init, cond, update, body },
+        span: (start, p.current_pos()),
+    })
+}
+
+/// Parse a comma-separated expression list for a `for(...)` init or
+/// update slot. Returns a single bare expression for length 1, or an
+/// `ExprKind::Comma` for 2+ entries. Returns `None` only if the very
+/// first expression failed to parse.
+fn parse_for_clause_expr_list(
+    p: &mut Parser,
+    start: crate::lex::Pos,
+) -> Option<Expr> {
+    use crate::parse::ast::ExprKind;
+    let first = crate::parse::expr::parse_expression(p)?;
+    if !matches!(p.peek(), TokenKind::Comma) {
+        return Some(first);
+    }
+    let mut items = vec![first];
+    while p.eat(&TokenKind::Comma) {
+        match crate::parse::expr::parse_expression(p) {
+            Some(e) => items.push(e),
+            None => break,
+        }
+    }
+    Some(Expr {
+        kind: ExprKind::Comma(items),
         span: (start, p.current_pos()),
     })
 }
