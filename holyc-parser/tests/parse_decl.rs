@@ -785,6 +785,105 @@ fn class_member_multi_decl_per_declarator_pointer_prefix() {
     }
 }
 
+// -------- `start` / `end` / `reg` / `noreg` contextual keywords --------
+//
+// These four names had previously been globally-reserved keywords,
+// which rejected real-world kernel HolyC where `start` is a common
+// local-variable name and `reg` shows up in asm-adjacent code as an
+// ordinary identifier. After Bucket B6 they're contextual:
+//   - `start` / `end` only mark sub-switch arms inside a switch body
+//   - `reg` / `noreg` are register-allocation modifiers only at the
+//     start of a declaration (modifier-prefix position)
+
+#[test]
+fn start_as_local_var() {
+    let (m, rules) = parse_top("U0 F() { I64 start = 5; start = start + 1; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let funcs: Vec<_> = m.items.iter().filter(|it| matches!(it, TopItem::Function(_))).collect();
+    assert_eq!(funcs.len(), 1);
+}
+
+#[test]
+fn start_as_global_var() {
+    let (m, rules) = parse_top("I64 start;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => assert_eq!(v.name, "start"),
+        other => panic!("expected Variable, got {other:?}"),
+    }
+}
+
+#[test]
+fn start_as_param_name() {
+    let (m, rules) = parse_top("U0 F(I64 start) { return; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let func = m.items.iter().find_map(|it| match it {
+        TopItem::Function(f) => Some(f),
+        _ => None,
+    }).expect("function");
+    assert_eq!(func.params.len(), 1);
+    assert_eq!(func.params[0].name.as_deref(), Some("start"));
+}
+
+#[test]
+fn reg_as_local_var() {
+    let (m, rules) = parse_top("U0 F() { I64 reg = 0; reg++; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let funcs: Vec<_> = m.items.iter().filter(|it| matches!(it, TopItem::Function(_))).collect();
+    assert_eq!(funcs.len(), 1);
+}
+
+#[test]
+fn reg_as_param_name() {
+    let (m, rules) = parse_top("U0 F(I64 reg) { return; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let func = m.items.iter().find_map(|it| match it {
+        TopItem::Function(f) => Some(f),
+        _ => None,
+    }).expect("function");
+    assert_eq!(func.params.len(), 1);
+    assert_eq!(func.params[0].name.as_deref(), Some("reg"));
+}
+
+#[test]
+fn reg_as_global_var() {
+    let (m, rules) = parse_top("I64 reg;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    match &m.items[0] {
+        TopItem::Variable(v) => assert_eq!(v.name, "reg"),
+        other => panic!("expected Variable, got {other:?}"),
+    }
+}
+
+#[test]
+fn noreg_as_local_var() {
+    let (m, rules) = parse_top("U0 F() { I64 noreg = 0; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let funcs: Vec<_> = m.items.iter().filter(|it| matches!(it, TopItem::Function(_))).collect();
+    assert_eq!(funcs.len(), 1);
+}
+
+#[test]
+fn reg_as_modifier_still_works_local() {
+    // Register-allocation modifier must still parse at function scope.
+    let (m, rules) = parse_top("U0 F() { reg I64 i = 0; }");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+    let funcs: Vec<_> = m.items.iter().filter(|it| matches!(it, TopItem::Function(_))).collect();
+    assert_eq!(funcs.len(), 1);
+}
+
+#[test]
+fn reg_as_modifier_still_works_global() {
+    let (_, rules) = parse_top("reg I64 i;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+}
+
+#[test]
+fn noreg_as_modifier_still_works_global() {
+    let (_, rules) = parse_top("noreg I64 j;");
+    assert!(rules.is_empty(), "unexpected diags: {rules:?}");
+}
+
 // -------- silence unused import warning --------
 #[allow(dead_code)]
 fn _force_use() {

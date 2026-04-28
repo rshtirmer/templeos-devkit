@@ -30,17 +30,40 @@ fn parse_statement_inner(p: &mut Parser, at_file_scope: bool) -> Option<Stmt> {
             Some(Stmt { kind: StmtKind::Empty, span: (start, p.current_pos()) })
         }
         TokenKind::LBrace => Some(parse_block(p, start)),
-        TokenKind::Ident(name) => match lookup_keyword(&name) {
-            Some(kw) => parse_keyword_stmt(p, kw, at_file_scope, start),
-            None => {
-                // Could be: label `IDENT :`, local decl with named-
-                // class type (e.g. `cvar_t *var;`), or expression-stmt.
-                if matches!(p.peek_at(1), TokenKind::Colon) {
-                    parse_label_stmt(p, name, at_file_scope, start)
-                } else if looks_like_named_type_local_decl(p) {
-                    parse_local_decl_stmt(p, at_file_scope, start)
-                } else {
-                    parse_expr_stmt(p, start)
+        TokenKind::Ident(name) => {
+            // Contextual keywords: `start` / `end` are sub-switch
+            // markers (parse-spec §3) only inside a switch body AND
+            // only when followed by `:` (label-like syntax). Outside
+            // a switch — or in any other position — they fall through
+            // to the regular identifier path so kernel code like
+            // `I64 start = 0;` and `start = 5;` parses cleanly.
+            if (name == "start" || name == "end")
+                && p.switch_depth > 0
+                && matches!(p.peek_at(1), TokenKind::Colon)
+            {
+                return parse_sub_switch_marker(p, &name, start);
+            }
+            // Contextual keywords: `reg` / `noreg` are register-
+            // allocation modifiers only when leading a declaration.
+            // Otherwise they're plain identifiers (kernel asm-adjacent
+            // code uses `reg` as a variable name).
+            if (name == "reg" || name == "noreg")
+                && crate::parse::decl::looks_like_decl_after_reg_modifier(p)
+            {
+                return parse_local_decl_stmt(p, at_file_scope, start);
+            }
+            match lookup_keyword(&name) {
+                Some(kw) => parse_keyword_stmt(p, kw, at_file_scope, start),
+                None => {
+                    // Could be: label `IDENT :`, local decl with named-
+                    // class type (e.g. `cvar_t *var;`), or expression-stmt.
+                    if matches!(p.peek_at(1), TokenKind::Colon) {
+                        parse_label_stmt(p, name, at_file_scope, start)
+                    } else if looks_like_named_type_local_decl(p) {
+                        parse_local_decl_stmt(p, at_file_scope, start)
+                    } else {
+                        parse_expr_stmt(p, start)
+                    }
                 }
             }
         },
@@ -112,6 +135,25 @@ fn parse_implicit_print_stmt(p: &mut Parser, start: crate::lex::Pos) -> Option<S
     Some(Stmt { kind: StmtKind::Expr(expr), span: (start, p.current_pos()) })
 }
 
+/// Parse a `start :` / `end :` sub-switch marker. The dispatcher
+/// only routes here when we're inside a switch body (parse-spec §3).
+fn parse_sub_switch_marker(
+    p: &mut Parser,
+    name: &str,
+    start: crate::lex::Pos,
+) -> Option<Stmt> {
+    p.bump(); // ident
+    if matches!(p.peek(), TokenKind::Colon) {
+        p.bump();
+    }
+    let kind = if name == "start" {
+        StmtKind::SubSwitchStart
+    } else {
+        StmtKind::SubSwitchEnd
+    };
+    Some(Stmt { kind, span: (start, p.current_pos()) })
+}
+
 /// `IDENT *... IDENT` at function-scope start of statement looks
 /// like a local decl whose type is a user-defined class. Mirrors
 /// `decl::looks_like_named_type_decl`.
@@ -154,8 +196,10 @@ fn parse_keyword_stmt(
         return parse_local_decl_stmt(p, at_file_scope, start);
     }
     match kw {
-        // Storage modifiers introducing a local decl
-        K::Static | K::Reg | K::Noreg => parse_local_decl_stmt(p, at_file_scope, start),
+        // Storage modifiers introducing a local decl. Note: `reg` /
+        // `noreg` are no longer keywords (they're contextual idents);
+        // their decl-prefix routing happens in `parse_statement_inner`.
+        K::Static => parse_local_decl_stmt(p, at_file_scope, start),
 
         K::If => parse_if(p, start),
         K::While => parse_while(p, start),
@@ -184,21 +228,9 @@ fn parse_keyword_stmt(
             }
             Some(Stmt { kind: StmtKind::Default, span: (start, p.current_pos()) })
         }
-        K::Start => {
-            p.bump();
-            // `start { ... }` form: optional `{` body, optionally with `:`
-            if matches!(p.peek(), TokenKind::Colon) {
-                p.bump();
-            }
-            Some(Stmt { kind: StmtKind::SubSwitchStart, span: (start, p.current_pos()) })
-        }
-        K::End => {
-            p.bump();
-            if matches!(p.peek(), TokenKind::Colon) {
-                p.bump();
-            }
-            Some(Stmt { kind: StmtKind::SubSwitchEnd, span: (start, p.current_pos()) })
-        }
+        // `start` / `end` (sub-switch markers) are no longer keywords —
+        // they're contextual idents handled in `parse_statement_inner`
+        // when seen inside a switch body.
         // `no_warn` is not actually a TempleOS keyword; skipped here.
         _ => {
             // Fallback: treat as expression-stmt (lets random idents
@@ -389,6 +421,9 @@ fn parse_switch(p: &mut Parser, start: crate::lex::Pos) -> Option<Stmt> {
     if !p.eat(&TokenKind::LBrace) {
         p.error_at(p.current_pos(), "expecting-lbrace", "Expecting '{' at ");
     }
+    // Track switch nesting so `start` / `end` (contextual keywords)
+    // become sub-switch markers only inside a switch body.
+    p.switch_depth += 1;
     let mut body = Vec::new();
     while !matches!(p.peek(), TokenKind::RBrace | TokenKind::Eof) {
         match parse_statement(p) {
@@ -398,6 +433,7 @@ fn parse_switch(p: &mut Parser, start: crate::lex::Pos) -> Option<Stmt> {
             }
         }
     }
+    p.switch_depth -= 1;
     if !p.eat(&TokenKind::RBrace) {
         p.error_at(p.current_pos(), "expecting-rbrace", "Missing '}' at ");
     }

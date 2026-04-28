@@ -22,9 +22,6 @@ pub enum Keyword {
     Goto,
     Try,
     Catch,
-    /// `start`/`end` mark sub-switch ranges per parse-spec §3.
-    Start,
-    End,
     Sizeof,
     Defined,
     Asm,
@@ -53,8 +50,6 @@ pub enum Keyword {
     Interrupt,
     Lock,
     Lastclass,
-    Noreg,
-    Reg,
 
     // Aggregate
     Class,
@@ -81,8 +76,12 @@ pub fn lookup(name: &str) -> Option<Keyword> {
         "goto" => Goto,
         "try" => Try,
         "catch" => Catch,
-        "start" => Start,
-        "end" => End,
+        // Note: `start` / `end` are CONTEXTUAL keywords — they mark
+        // sub-switch ranges per parse-spec §3 only when seen as
+        // statements inside a `switch` body. Outside a switch body
+        // they must resolve as plain identifiers (kernel code uses
+        // `start` as an ordinary local-variable name). The contextual
+        // dispatch lives in `parse::stmt::parse_statement_inner`.
         "sizeof" => Sizeof,
         // Note: `offset` is a CONTEXTUAL keyword — it only acts as the
         // offsetof operator when followed by `(`. Otherwise (e.g. as a
@@ -114,8 +113,13 @@ pub fn lookup(name: &str) -> Option<Keyword> {
         "interrupt" => Interrupt,
         "lock" => Lock,
         "lastclass" => Lastclass,
-        "noreg" => Noreg,
-        "reg" => Reg,
+        // Note: `reg` / `noreg` are CONTEXTUAL keywords — they only
+        // act as register-allocation modifiers at the start of a
+        // declaration (i.e. in modifier-prefix position consumed by
+        // `parse::decl::parse_modifiers`). Anywhere else (variable
+        // names, parameter names, member names) they fall through
+        // to plain identifier so kernel asm-adjacent code that uses
+        // `reg` as a name parses cleanly.
 
         "class" => Class,
         "union" => Union,
