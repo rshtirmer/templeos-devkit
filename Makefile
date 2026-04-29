@@ -40,7 +40,7 @@ dev-temple: $(TEMPLE_DISK)
 test-temple:
 ifeq ($(WARM),1)
 	@$(MAKE) --no-print-directory vm-revert
-	T="$(T)" python3 scripts/temple-run.py --skip-bootstrap --filter="$(T)"
+	T="$(T)" python3 scripts/temple-run.py --tests-only --filter="$(T)"
 else
 	T="$(T)" python3 scripts/temple-run.py --filter="$(T)"
 endif
