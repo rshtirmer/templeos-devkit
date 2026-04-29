@@ -97,24 +97,40 @@ const BUILTINS: &[&str] = &[
 
     // ---- Graphics / DC primitives (Adam/Gr/*) ----
     // The `gr` global is a CGr struct holding the screen DC + state.
+    // Color is set by direct field assignment: `gr.dc->color = X`.
+    // Names below are exactly what's `public ... Gr*(`-defined in
+    // the Adam/Gr/ source; previous spellings (GrColor*, GrPlot
+    // without 0/3, GrLine/Circle/Ellipse, GrFloodFill,
+    // GrFillRect, GrUpdateScrn) were taken from documentation
+    // that doesn't match the kernel.
     "gr",
-    // Color setters
-    "GrColor", "GrColor1", "GrColor2",
-    // Plot / line / shape primitives
-    "GrPlot", "GrLine", "GrLine3", "GrFloodFill",
-    "GrRect", "GrRect3", "GrFillRect",
-    "GrCircle", "GrCircle3",
-    "GrEllipse", "GrEllipse3",
-    "GrPrint", "GrPrintCenter",
-    "GrBlot",   "GrBitMapPut", "GrBitMapAnd", "GrBitMapOr",
-    "GrUpdateScrn", "GrUpdateTaskWin",
+    // Plot / peek
+    "GrPlot0",  "GrPlot3",  "GrPeek0",
+    // Lines + shapes
+    "GrHLine",  "GrVLine",
+    "GrRect",   "GrRectB",
+    "GrBorder",
+    // Text
+    "GrPrint",  "GrVPrint", "GrPutChar",
+    // Bitmaps + scaling
+    "GrBlot",
+    "GrScaleZoom",
+    // Palette
+    "GrPaletteSet",       "GrPaletteGet",
+    "GrPaletteColorSet",  "GrPaletteColorGet",
+    "PaletteSetStd",
     // DC management
-    "DCNew", "DCDel", "DCAlias", "DCCopy", "DCFill",
-    "DCLoad", "DCSave",
-    "DCDepthBufRead", "DCDepthBufNew",
+    "DCNew",   "DCDel",   "DCAlias",  "DCCopy",
+    "DCFill",  "DCRst",   "DCClear",  "DCMono",
+    "DCExt",   "DCDiff",  "DCColorChg",
+    "DCSize",  "DCExtentsInit", "DCLighting",
+    "DCLoad",  "DCSave",
+    "DCMat4x4Set", "DCTransform",
+    "DCDepthBufAlloc", "DCDepthBufRst",
+    "DCScrnCapture",
+    "DC2Sprite", "GRRead", "GRWrite",
     // Sprite renderer
-    "SpriteDraw", "SpriteDrawNoTransform",
-    "SpriteEdNew", "SpriteEd",
+    "Sprite3", "SpriteCnt", "SpriteSize",
 
     // ---- HolyC reserved keywords lex would emit as Ident ----
     // (parsing handles these, but seeding here keeps the resolver
