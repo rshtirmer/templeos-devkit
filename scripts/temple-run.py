@@ -397,6 +397,13 @@ def main():
                          "running (no probe). Prefer letting the script "
                          "auto-detect; use this only when the log/probe "
                          "machinery is unavailable.")
+    ap.add_argument("--tests-only", action="store_true",
+                    help="skip BOTH the daemon bootstrap AND the src/ "
+                         "phase 1 push — go straight to tests/. Use after "
+                         "`make vm-revert` (snapshot restore): the loaded "
+                         "snapshot already has src/ in JIT memory, so "
+                         "re-pushing it is wasted time. Implies "
+                         "--skip-bootstrap.")
     ap.add_argument("--reset-daemon", "--force-bootstrap", action="store_true",
                     help="force a full bootstrap even if a live daemon is "
                          "auto-detected. Use when daemon state is suspect "
@@ -447,7 +454,7 @@ def main():
     # member" or stall waiting for a D_OK that never comes (because the
     # function is already defined). --skip-bootstrap is the manual hard
     # override; --reset-daemon forces a full bootstrap regardless.
-    skip_bootstrap = args.skip_bootstrap
+    skip_bootstrap = args.skip_bootstrap or args.tests_only
     if not skip_bootstrap and not args.reset_daemon:
         if detect_live_daemon():
             print("==> daemon already up — skipping bootstrap")
@@ -552,11 +559,16 @@ def main():
             seen.add(f.name)
 
     # Phase 1: source + (optionally) Assert. Each is JIT-compiled.
-    print(f"==> phase 1: pushing {len(src_files)} source files")
-    for f in src_files:
-        if not push_and_wait(_prep(f.read_bytes()),
-                             f.name, timeout=args.push_timeout):
-            sys.exit(1)
+    # `--tests-only` skips this entirely — used after a snapshot
+    # restore that already has src/ in JIT memory.
+    if args.tests_only:
+        print(f"==> phase 1: SKIPPED (--tests-only; src/ assumed loaded)")
+    else:
+        print(f"==> phase 1: pushing {len(src_files)} source files")
+        for f in src_files:
+            if not push_and_wait(_prep(f.read_bytes()),
+                                 f.name, timeout=args.push_timeout):
+                sys.exit(1)
 
     if args.keep_daemon:
         print("==> src/ pushed; daemon left listening on COM2")
