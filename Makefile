@@ -278,14 +278,18 @@ vm-warmup:
 	@python3 scripts/temple-run.py --keep-daemon
 	@echo "==> saving snapshot 'ready' (savevm blocks for a few seconds)..."
 	@$(call qmp_send,savevm ready) >build/qemu-warmup.out 2>&1 || true
-	@echo "==> verifying snapshot via 'info snapshots'"
-	@out=$$($(call qmp_send,info snapshots) 2>/dev/null); \
-	if echo "$$out" | grep -q 'ready'; then \
+	@# Verify by reading the qcow2 directly. macOS `nc` silently
+	@# drops HMP responses, so parsing `info snapshots` is unreliable
+	@# there. `qemu-img snapshot -l` reads the on-disk snapshot list
+	@# regardless of monitor behavior — the qcow2 IS modified in-place
+	@# by savevm.
+	@echo "==> verifying snapshot landed in $(TEMPLE_DISK)"
+	@if qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
 	  echo "==> snapshot 'ready' saved"; \
 	else \
-	  echo "error: snapshot 'ready' not found after savevm" >&2; \
-	  echo "--- monitor output ---" >&2; \
-	  echo "$$out" >&2; \
+	  echo "error: snapshot 'ready' not found in $(TEMPLE_DISK)" >&2; \
+	  echo "--- qemu-img snapshot -l ---" >&2; \
+	  qemu-img snapshot -l $(TEMPLE_DISK) >&2 || true; \
 	  exit 1; \
 	fi
 
@@ -295,8 +299,7 @@ vm-revert:
 	@if [ ! -S "$(TEMPLE_MON)" ]; then \
 	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
 	fi
-	@out=$$($(call qmp_send,info snapshots) 2>/dev/null); \
-	if ! echo "$$out" | grep -q 'ready'; then \
+	@if ! qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
 	  echo "error: no 'ready' snapshot — run 'make vm-warmup' first" >&2; exit 1; \
 	fi
 	@echo "==> reverting to snapshot 'ready'"
@@ -304,8 +307,10 @@ vm-revert:
 
 # vm-snapshots — list snapshots present in the qcow2 (live VM view).
 vm-snapshots:
-	@if [ ! -S "$(TEMPLE_MON)" ]; then \
-	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
+	@# Reads the on-disk snapshot list directly via qemu-img — works
+	@# whether or not the VM is currently running.
+	@if qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | tail -n +2 | grep -q .; then \
+	  qemu-img snapshot -l $(TEMPLE_DISK); \
+	else \
+	  echo "(no snapshots — run 'make vm-warmup' to create 'ready')"; \
 	fi
-	@$(call qmp_send,info snapshots) 2>/dev/null | grep -E '^[0-9]+ +ready|^ID' || \
-	  echo "(no 'ready' snapshot — run 'make vm-warmup')"
