@@ -287,12 +287,12 @@ vm-warmup:
 	@# regardless of monitor behavior — the qcow2 IS modified in-place
 	@# by savevm.
 	@echo "==> verifying snapshot landed in $(TEMPLE_DISK)"
-	@if qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
+	@if qemu-img snapshot -l -U $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
 	  echo "==> snapshot 'ready' saved"; \
 	else \
 	  echo "error: snapshot 'ready' not found in $(TEMPLE_DISK)" >&2; \
 	  echo "--- qemu-img snapshot -l ---" >&2; \
-	  qemu-img snapshot -l $(TEMPLE_DISK) >&2 || true; \
+	  qemu-img snapshot -l -U $(TEMPLE_DISK) >&2 || true; \
 	  exit 1; \
 	fi
 
@@ -302,7 +302,7 @@ vm-revert:
 	@if [ ! -S "$(TEMPLE_MON)" ]; then \
 	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
 	fi
-	@if ! qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
+	@if ! qemu-img snapshot -l -U $(TEMPLE_DISK) 2>/dev/null | awk '{print $$2}' | grep -qx 'ready'; then \
 	  echo "error: no 'ready' snapshot — run 'make vm-warmup' first" >&2; exit 1; \
 	fi
 	@echo "==> reverting to snapshot 'ready'"
@@ -312,8 +312,8 @@ vm-revert:
 vm-snapshots:
 	@# Reads the on-disk snapshot list directly via qemu-img — works
 	@# whether or not the VM is currently running.
-	@if qemu-img snapshot -l $(TEMPLE_DISK) 2>/dev/null | tail -n +2 | grep -q .; then \
-	  qemu-img snapshot -l $(TEMPLE_DISK); \
+	@if qemu-img snapshot -l -U $(TEMPLE_DISK) 2>/dev/null | tail -n +2 | grep -q .; then \
+	  qemu-img snapshot -l -U $(TEMPLE_DISK); \
 	else \
 	  echo "(no snapshots — run 'make vm-warmup' to create 'ready')"; \
 	fi
