@@ -1,5 +1,6 @@
 .PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help \
-	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple launch-temple
+	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple launch-temple \
+	vm-status vm-screen vm-logs vm-reset vm-down
 
 # ---- Original TempleOS (Terry's 2017 Distro) — side-by-side compat target ----
 # No shuttle / FAT image / payload disk: the host pushes the entire test
@@ -149,3 +150,82 @@ clean:
 clean-disk:
 	rm -f $(DISK)
 	@echo "disk wiped — run 'make install' to reinstall"
+
+# ---- VM lifecycle ergonomics (TempleOS dev-temple VM) ----
+# Quick inspect + control commands for the running VM. Each is
+# idempotent and self-contained — no harm running twice.
+
+TEMPLE_MON   := build/qemu-temple.sock
+TEMPLE_COM2  := build/com2-temple.sock
+TEMPLE_LOG   := build/serial-temple.log
+TEMPLE_PNG   := build/screen-temple.png
+
+# vm-status — is the VM alive? Reports pid/uptime, sockets, log tail.
+vm-status:
+	@pid=$$(pgrep -f 'qemu-system-x86.*qemu-temple\.sock' | head -1); \
+	if [ -n "$$pid" ]; then \
+	  etime=$$(ps -o etime= -p $$pid 2>/dev/null | tr -d ' '); \
+	  echo "VM up   pid=$$pid  uptime=$$etime"; \
+	else \
+	  echo "VM down (no qemu process matching qemu-temple.sock)"; \
+	fi
+	@if [ -S "$(TEMPLE_MON)" ]; then echo "monitor sock: $(TEMPLE_MON) (ok)"; else echo "monitor sock: missing"; fi
+	@if [ -S "$(TEMPLE_COM2)" ]; then echo "com2 sock:    $(TEMPLE_COM2) (ok)"; else echo "com2 sock:    missing"; fi
+	@if [ -f "$(TEMPLE_LOG)" ]; then \
+	  echo "--- last 3 lines of $(TEMPLE_LOG) ---"; \
+	  tail -n 3 "$(TEMPLE_LOG)" || true; \
+	  echo "--- last D_OK / D2_OK / D_EXIT markers ---"; \
+	  grep -nE 'D_OK|D2_OK|D_EXIT' "$(TEMPLE_LOG)" | tail -n 3 || echo "(none seen yet)"; \
+	else \
+	  echo "serial log:   $(TEMPLE_LOG) missing"; \
+	fi
+
+# vm-screen — capture current QEMU framebuffer to build/screen-temple.png.
+vm-screen:
+	@if [ ! -S "$(TEMPLE_MON)" ]; then \
+	  echo "error: $(TEMPLE_MON) not found — VM not running?" >&2; exit 1; \
+	fi
+	@QEMU_SOCK="$(TEMPLE_MON)" SCREEN_PPM="build/screen-temple.ppm" SCREEN_PNG="$(TEMPLE_PNG)" \
+	  bash scripts/screenshot.sh
+	@echo "==> wrote $(TEMPLE_PNG) — open it with: open $(TEMPLE_PNG)"
+
+# vm-logs — follow build/serial-temple.log (or fixed-line tail with N=20).
+vm-logs:
+	@if [ ! -f "$(TEMPLE_LOG)" ]; then \
+	  echo "error: $(TEMPLE_LOG) missing — VM not running?" >&2; exit 1; \
+	fi
+	@if [ -n "$(N)" ]; then \
+	  tail -n "$(N)" "$(TEMPLE_LOG)"; \
+	else \
+	  echo "==> tailing $(TEMPLE_LOG) (Ctrl-C to stop)"; \
+	  tail -f "$(TEMPLE_LOG)"; \
+	fi
+
+# vm-reset — kill any wedged QEMU, clean sockets+log, relaunch dev-temple.
+vm-reset:
+	@echo "==> killing any qemu-system-x86 processes"
+	@pkill -f 'qemu-system-x86' 2>/dev/null || true
+	@sleep 2
+	@echo "==> cleaning sockets and serial log"
+	@rm -f "$(TEMPLE_MON)" "$(TEMPLE_COM2)" "$(TEMPLE_LOG)"
+	@echo "==> relaunching dev-temple in background"
+	@nohup bash scripts/boot-temple.sh dev >build/vm-reset.out 2>&1 &
+	@echo "==> waiting up to 90s for VM to boot (monitor sock + autopress)"
+	@i=0; while [ $$i -lt 90 ]; do \
+	  if [ -S "$(TEMPLE_MON)" ]; then break; fi; \
+	  sleep 1; i=$$((i+1)); \
+	done
+	@if [ -S "$(TEMPLE_MON)" ]; then \
+	  echo "==> VM responsive — monitor sock present"; \
+	  sleep 15; \
+	  $(MAKE) --no-print-directory vm-status; \
+	else \
+	  echo "error: VM did not come up within 90s — check build/vm-reset.out" >&2; \
+	  exit 1; \
+	fi
+
+# vm-down — kill the QEMU VM and remove its sockets. Idempotent.
+vm-down:
+	@pkill -f 'qemu-system-x86' 2>/dev/null && echo "==> killed qemu" || echo "==> no qemu process to kill"
+	@rm -f "$(TEMPLE_MON)" "$(TEMPLE_COM2)"
+	@echo "==> sockets cleaned"
