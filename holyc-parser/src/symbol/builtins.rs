@@ -95,6 +95,27 @@ const BUILTINS: &[&str] = &[
     // ---- DolDoc / framebuffer touches we hit in shuttle code ----
     "DocCenter", "DocClear", "DocBottom", "DocTop",
 
+    // ---- Graphics / DC primitives (Adam/Gr/*) ----
+    // The `gr` global is a CGr struct holding the screen DC + state.
+    "gr",
+    // Color setters
+    "GrColor", "GrColor1", "GrColor2",
+    // Plot / line / shape primitives
+    "GrPlot", "GrLine", "GrLine3", "GrFloodFill",
+    "GrRect", "GrRect3", "GrFillRect",
+    "GrCircle", "GrCircle3",
+    "GrEllipse", "GrEllipse3",
+    "GrPrint", "GrPrintCenter",
+    "GrBlot",   "GrBitMapPut", "GrBitMapAnd", "GrBitMapOr",
+    "GrUpdateScrn", "GrUpdateTaskWin",
+    // DC management
+    "DCNew", "DCDel", "DCAlias", "DCCopy", "DCFill",
+    "DCLoad", "DCSave",
+    "DCDepthBufRead", "DCDepthBufNew",
+    // Sprite renderer
+    "SpriteDraw", "SpriteDrawNoTransform",
+    "SpriteEdNew", "SpriteEd",
+
     // ---- HolyC reserved keywords lex would emit as Ident ----
     // (parsing handles these, but seeding here keeps the resolver
     // honest if the parser hands one through unrecognised)
