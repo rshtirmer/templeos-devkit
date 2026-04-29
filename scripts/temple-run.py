@@ -323,6 +323,11 @@ def main():
                          "adam's window with an interactive viewer like "
                          "an editor or a custom tool — the spawned-task "
                          "hash-chain workaround.")
+    ap.add_argument("--keep-daemon", action="store_true",
+                    help="push src files (skip tests) but LEAVE the daemon "
+                         "running on COM2 so external tools can stream "
+                         "more HolyC into the live VM via the same "
+                         "socket. Mutually exclusive with --launch.")
     args = ap.parse_args()
 
     if not COM2.exists() or not MON.exists():
@@ -421,6 +426,10 @@ def main():
         if not push_and_wait(_prep(f.read_bytes()),
                              f.name, timeout=args.push_timeout):
             sys.exit(1)
+
+    if args.keep_daemon:
+        print("==> src/ pushed; daemon left listening on COM2")
+        return
 
     if args.launch is not None:
         # Two steps: (1) tell D() to exit so adam returns to its REPL;
