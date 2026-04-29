@@ -24,11 +24,23 @@ Pipeline:
      Top-level statements (PASS / ASSERT_EQ in test files) execute
      during the push; output streams back over COM1.
   4. Final push is `TEST_SUMMARY; CommPrint(1, "TEST_RUN_END\\n");`.
+
+Idempotency: repeated runs against a live VM (e.g. after --keep-daemon
+or an interrupted run) auto-detect a still-listening daemon and skip
+the bootstrap, so re-defining D()/D2() doesn't trip "Duplicate member"
+or "D_OK never appeared". Detection reads the tail of the serial log
+for a recent D2_OK / D_DONE token, then probes COM2 with a uniquely-
+suffixed marker and waits a few seconds for its echo over COM1. If the
+echo lands, we proceed straight to the source push. Use --reset-daemon
+to force a full bootstrap when state is suspect; --skip-bootstrap
+remains the manual hard override (no probe).
 """
 
 import argparse
 import os
+import random
 import socket
+import string
 import sys
 import time
 from pathlib import Path
@@ -264,6 +276,59 @@ def _auto_screenshot(label: str) -> str | None:
     return str(png)
 
 
+def detect_live_daemon(*, probe_timeout: float = 3.0) -> bool:
+    """Return True iff a stage-2 daemon appears alive on COM2.
+
+    Two-stage check:
+      1. Tail the last ~50 KB of the serial log. The most recent of the
+         daemon-state markers (D2_OK / D_DONE / D_EXIT) must be a
+         "still alive" marker (D2_OK or D_DONE), not D_EXIT. If the log
+         is missing or the last-seen marker is D_EXIT, we know the
+         daemon is gone and skip the probe.
+      2. Push a uniquely-suffixed `CommPrint(1,"PROBE_OK_<rand>\\n");`
+         over COM2 and wait `probe_timeout` for the echo on COM1.
+         Echo present -> daemon is definitely alive.
+
+    Note we deliberately do NOT gate on log mtime: a daemon idle for an
+    hour is still listening on COM2; the absence of recent COM1 writes
+    just means nothing has been pushed lately. The probe itself is the
+    source of truth — the tail-scan is a cheap pre-filter.
+
+    The random suffix on PROBE_OK avoids matching stale echoes from
+    earlier runs and keeps the marker out of any test-output namespace.
+    """
+    # Stage 1 — tail-scan. If the log doesn't exist, the VM is brand new
+    # and the daemon can't be up.
+    if not LOG.exists():
+        return False
+    try:
+        size = LOG.stat().st_size
+        with LOG.open("rb") as fh:
+            fh.seek(max(0, size - 50_000))
+            tail = fh.read().decode(errors="replace")
+    except OSError:
+        return False
+    last_d2 = tail.rfind("D2_OK")
+    last_done = tail.rfind("D_DONE")
+    last_exit = tail.rfind("D_EXIT")
+    last_alive = max(last_d2, last_done)
+    if last_alive < 0 or last_alive < last_exit:
+        return False
+    # Stage 2 — active probe. A unique marker so we never match a stale
+    # echo. The probe is harmless source: just one CommPrint statement.
+    suffix = "".join(random.choices(string.ascii_uppercase + string.digits,
+                                    k=8))
+    marker = f"PROBE_OK_{suffix}"
+    payload = f'CommPrint(1,"{marker}\\n");'.encode()
+    try:
+        since = log_size()
+        push_chunk(payload)
+    except (OSError, ConnectionError):
+        return False
+    ok, _ = wait_for(marker, since=since, timeout=probe_timeout)
+    return ok
+
+
 def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
     since = log_size()
     push_chunk(payload)
@@ -291,7 +356,14 @@ def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--skip-bootstrap", action="store_true",
-                    help="assume daemon already running (D_OK already in log)")
+                    help="manual hard override: assume daemon already "
+                         "running (no probe). Prefer letting the script "
+                         "auto-detect; use this only when the log/probe "
+                         "machinery is unavailable.")
+    ap.add_argument("--reset-daemon", "--force-bootstrap", action="store_true",
+                    help="force a full bootstrap even if a live daemon is "
+                         "auto-detected. Use when daemon state is suspect "
+                         "(e.g. half-finished previous run).")
     ap.add_argument("--filter", default="",
                     help="substring filter for tests (T= equivalent)")
     ap.add_argument("--push-timeout", type=float,
@@ -333,7 +405,25 @@ def main():
     if not COM2.exists() or not MON.exists():
         sys.exit("error: VM not up — run 'bash scripts/boot-temple.sh dev' first")
 
-    if not args.skip_bootstrap:
+    # Auto-detect a live daemon before typing the bootstrap. Re-typing
+    # D()/D2() into a daemon that's already alive would trip "Duplicate
+    # member" or stall waiting for a D_OK that never comes (because the
+    # function is already defined). --skip-bootstrap is the manual hard
+    # override; --reset-daemon forces a full bootstrap regardless.
+    skip_bootstrap = args.skip_bootstrap
+    if not skip_bootstrap and not args.reset_daemon:
+        if detect_live_daemon():
+            print("==> daemon already up — skipping bootstrap")
+            skip_bootstrap = True
+        else:
+            # Either no recent alive-marker, or the probe didn't echo.
+            # Distinguish for the user: if the log tail looked alive we
+            # actually pushed a probe; if not we never sent anything.
+            print("==> daemon probe failed; running full bootstrap")
+    elif args.reset_daemon:
+        print("==> --reset-daemon set; running full bootstrap")
+
+    if not skip_bootstrap:
         print(f"==> typing bootstrap ({len(BOOTSTRAP_CMDS)} commands)")
         since = log_size()  # capture BEFORE typing — D_OK may land between cmds
         for i, cmd in enumerate(BOOTSTRAP_CMDS, 1):
