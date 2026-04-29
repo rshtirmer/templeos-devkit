@@ -70,7 +70,7 @@ help:
 	@echo "make test T=Hello   only run tests whose filename contains 'Hello'"
 	@echo "make test-fast      push tests to running 'make repl' VM (sub-second)"
 	@echo "make lint           static-lint src/ and tests/ — boot-phase quirks, balance"
-	@echo "make watch          re-run 'make test' on src/ or tests/ change (needs fswatch)"
+	@echo "make watch          auto-run test cycle on save (T=, WARM=, PUSH_TIMEOUT= pass-through)"
 	@echo "make clean          remove build artifacts (keeps ISO and disk)"
 	@echo "make clean-disk     wipe the installed disk (forces a fresh install)"
 
@@ -136,13 +136,19 @@ lint:
 	@python3 scripts/holyc-lint.py src $$(find tests -name '*.HC' -o -name '*.ZC' -o -name '*.HH' | grep -v '^tests/lint/bad-')
 	@bash tests/lint/run.sh
 
-# Re-run the test loop on any change under src/ or tests/. Single shot per
-# event; if you save 5 files in 200ms, fswatch coalesces. macOS only;
-# `brew install fswatch` if missing.
+# Re-run the test cycle on every save under src/ or tests/. Auto-detects
+# fswatch (macOS) or inotifywait (Linux). Coalesces save bursts via a
+# short debounce. Ctrl-C to stop.
+#
+# Pairs with the snapshot fast-path (vm-warmup):
+#   make dev-temple           # cold boot once
+#   make vm-warmup            # save snapshot once
+#   make watch T=Foo WARM=1   # ~10s feedback per save
+#
+# T= filters the test battery; WARM=1 uses the snapshot fast-path;
+# PUSH_TIMEOUT= forwards to temple-run.py.
 watch:
-	@command -v fswatch >/dev/null || { echo "error: fswatch not installed (brew install fswatch)"; exit 1; }
-	@echo "==> watching src/ tests/ — Ctrl-C to stop"
-	@fswatch -o src tests | xargs -n1 -I{} $(MAKE) test
+	@bash scripts/watch.sh "$(T)" "$(WARM)" "$(PUSH_TIMEOUT)"
 
 clean:
 	rm -rf build
