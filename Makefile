@@ -263,8 +263,11 @@ vm-down:
 # Helper: send a QEMU monitor command. Trailing `quit` makes nc exit
 # cleanly; macOS nc has no -q, so use -i 1 to flush before close.
 # Usage: $(call qmp_send,<command>)
+# DO NOT send `quit` — that would shut down the VM, not close the
+# monitor session. nc's `-w 2` closes the connection after 2s of
+# silence, which gives QEMU time to process the command then drop.
 define qmp_send
-printf '%s\nquit\n' '$(1)' | nc -U -i 1 "$(TEMPLE_MON)"
+printf '%s\n' '$(1)' | nc -U -w 2 "$(TEMPLE_MON)"
 endef
 
 # vm-warmup — push src/ to the running VM, then snapshot RAM+disk.
