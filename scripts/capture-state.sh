@@ -24,7 +24,30 @@ set -uo pipefail
 REPO="$(cd "$(dirname "$0")/.." && pwd)"
 BUILD="$REPO/build"
 TS="$(date +%Y%m%d-%H%M%S)"
-OUT="$BUILD/capture-$TS"
+
+# Optional --label=<slug> places the capture in build/capture-<slug>-<ts>/
+# instead of build/capture-<ts>/, so per-failure bundles (e.g. one per
+# failed test) are easy to spot in retrospect. Non-alphanumeric chars in
+# the label are replaced with `_` to keep the path well-behaved.
+LABEL=""
+for arg in "$@"; do
+  case "$arg" in
+    --label=*)
+      LABEL="${arg#--label=}"
+      ;;
+    *)
+      echo "capture-state: unknown argument: $arg" >&2
+      exit 2
+      ;;
+  esac
+done
+
+if [ -n "$LABEL" ]; then
+  SAFE_LABEL="$(printf '%s' "$LABEL" | tr -c 'A-Za-z0-9._-' '_' | cut -c1-60)"
+  OUT="$BUILD/capture-$SAFE_LABEL-$TS"
+else
+  OUT="$BUILD/capture-$TS"
+fi
 mkdir -p "$OUT"
 
 SERIAL_LOG="$BUILD/serial-temple.log"
@@ -110,6 +133,9 @@ fi
 {
   echo "# Capture summary — $TS"
   echo
+  if [ -n "$LABEL" ]; then
+    echo "- Label: \`$LABEL\`"
+  fi
   echo "- VM running? **$QEMU_RUNNING**"
   echo "- Capture dir: \`$OUT\`"
   echo "- Screenshot: **$SCREEN_STATUS**"

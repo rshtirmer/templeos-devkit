@@ -249,6 +249,37 @@ def _prep(body: bytes) -> bytes:
     return body
 
 
+def _capture_failure(label: str) -> str | None:
+    """Run capture-state.sh with --label=<label> so a full debug bundle
+    (screenshot + serial tail + qemu inventory + summary) is dropped on
+    disk before we exit on a failure path. Prints "==> failure captured
+    to <bundle path>" to stderr; returns the bundle path or None on
+    error. Never raises — capture failures must not mask the original
+    error we're trying to report.
+    """
+    import subprocess
+    try:
+        proc = subprocess.run(
+            ["bash", str(REPO / "scripts" / "capture-state.sh"),
+             f"--label={label}"],
+            check=False, capture_output=True, text=True,
+        )
+    except OSError as e:
+        print(f"!! capture-state.sh failed to launch: {e}", file=sys.stderr)
+        return None
+    # capture-state.sh echoes its OUT path on the last line of stdout.
+    bundle = (proc.stdout or "").strip().splitlines()
+    bundle_path = bundle[-1] if bundle else ""
+    if proc.returncode != 0:
+        print(f"!! capture-state.sh exited {proc.returncode}", file=sys.stderr)
+        if proc.stderr:
+            print(proc.stderr, file=sys.stderr)
+    if bundle_path:
+        print(f"==> failure captured to {bundle_path}", file=sys.stderr)
+        return bundle_path
+    return None
+
+
 def _auto_screenshot(label: str) -> str | None:
     """Snap the QEMU framebuffer when a COMPILE_FAIL is seen. Numbered
     so successive failures don't stomp each other. Returns saved path
@@ -338,16 +369,22 @@ def push_and_wait(payload: bytes, label: str, timeout: float = 60.0):
     sys.stdout.write("\n")
     if not ok:
         print(f"!! D_DONE timeout for {label}", file=sys.stderr)
+        _capture_failure(f"push-{label}")
         return False
     if "COMPILE_FAIL" in captured:
         # Daemon caught a 'Compiler' throw inside ExePutS. The captured
         # text between COMPILE_ERR_BEGIN/END already contains the lexer
         # error. Snap the framebuffer too — sometimes Print attrs get
-        # eaten by DolDoc and the captured text is partial.
+        # eaten by DolDoc and the captured text is partial. We keep the
+        # legacy per-label PNG and additionally drop a full capture-state
+        # bundle so agents/humans get the richer view by default.
         shot = _auto_screenshot(label)
+        bundle = _capture_failure(f"compile-fail-{label}")
         msg = f"!! COMPILE_FAIL on {label}"
         if shot:
             msg += f" — screenshot: {shot}"
+        if bundle:
+            msg += f" — bundle: {bundle}"
         print(msg, file=sys.stderr)
         return False
     return True
@@ -432,6 +469,7 @@ def main():
             time.sleep(1.0)  # let TempleOS parse before next line
         ok, _ = wait_for("D_OK", since=since, timeout=20.0)
         if not ok:
+            _capture_failure("bootstrap-d_ok")
             sys.exit("error: D_OK never appeared after typing daemon. "
                      "Check screen-temple.png for parser errors.")
         print("==> stage-1 daemon up (D_OK)")
@@ -447,17 +485,20 @@ def main():
         push_chunk(DAEMON_V2_SOURCE.encode())
         ok, captured = wait_for("D_DONE", since=since, timeout=15.0)
         if not ok:
+            _capture_failure("bootstrap-stage2-d_done")
             sys.exit(f"error: stage-2 source did not D_DONE. log:\n{captured}")
         # Now break stage-1 D() loop so adam returns to its REPL.
         since = log_size()
         push_chunk(b"_D_exit=TRUE;")
         ok, _ = wait_for("D_EXIT", since=since, timeout=10.0)
         if not ok:
+            _capture_failure("bootstrap-stage1-d_exit")
             sys.exit("error: stage-1 D_EXIT not seen")
         # Reset _D_exit and start D2 from adam's REPL.
         sendkey("_D_exit=FALSE;D2();", enter=True, delay=0.05)
         ok, _ = wait_for("D2_OK", since=since, timeout=10.0)
         if not ok:
+            _capture_failure("bootstrap-d2_ok")
             sys.exit("error: D2_OK never appeared. Check screen-temple.png.")
         print("==> stage-2 daemon up (D2_OK)")
 
@@ -561,6 +602,7 @@ def main():
     sys.stdout.write(captured)
     if not ok:
         print("!! TEST_RUN_END never seen", file=sys.stderr)
+        _capture_failure("test-run-end-timeout")
         sys.exit(2)
     print("\n==> done")
 
