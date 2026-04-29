@@ -1,6 +1,6 @@
 .PHONY: setup disk shuttle install boot boot-disk dev repl wire-makehome test test-fast lint watch clean clean-disk help \
 	setup-temple disk-temple install-temple boot-temple-disk dev-temple test-temple launch-temple \
-	vm-status vm-screen vm-logs vm-reset vm-down
+	vm-status vm-screen vm-logs vm-reset vm-down vm-warmup vm-revert vm-snapshots
 
 # ---- Original TempleOS (Terry's 2017 Distro) — side-by-side compat target ----
 # No shuttle / FAT image / payload disk: the host pushes the entire test
@@ -32,8 +32,18 @@ dev-temple: $(TEMPLE_DISK)
 # Push the battery to a running dev-temple VM (boot-temple.sh dev must
 # be up; pick Drive C in the bootloader and skip the Once.HC tour with
 # 'n', then run this). Use T= to filter test files.
+#
+# WARM=1 — fast path: revert to the 'ready' snapshot (saved by
+# `make vm-warmup`) and push tests/ only with --skip-bootstrap. Drops
+# warm-cycle time from ~30s to ~10s by skipping the src/ re-push.
+# Cold path (default, WARM unset) is unchanged.
 test-temple:
+ifeq ($(WARM),1)
+	@$(MAKE) --no-print-directory vm-revert
+	T="$(T)" python3 scripts/temple-run.py --skip-bootstrap --filter="$(T)"
+else
 	T="$(T)" python3 scripts/temple-run.py --filter="$(T)"
+endif
 
 # Push src files (skip tests), exit the daemon, and sendkey CMD into
 # adam's REPL — adam now owns the foreground task. Pattern for taking
@@ -70,7 +80,7 @@ help:
 	@echo "make test T=Hello   only run tests whose filename contains 'Hello'"
 	@echo "make test-fast      push tests to running 'make repl' VM (sub-second)"
 	@echo "make lint           static-lint src/ and tests/ — boot-phase quirks, balance"
-	@echo "make watch          re-run 'make test' on src/ or tests/ change (needs fswatch)"
+	@echo "make watch          auto-run test cycle on save (T=, WARM=, PUSH_TIMEOUT= pass-through)"
 	@echo "make clean          remove build artifacts (keeps ISO and disk)"
 	@echo "make clean-disk     wipe the installed disk (forces a fresh install)"
 
@@ -229,3 +239,67 @@ vm-down:
 	@pkill -f 'qemu-system-x86' 2>/dev/null && echo "==> killed qemu" || echo "==> no qemu process to kill"
 	@rm -f "$(TEMPLE_MON)" "$(TEMPLE_COM2)"
 	@echo "==> sockets cleaned"
+
+# ---- VM snapshot/restore (fast dev loop) ----
+# QEMU's `savevm <tag>` / `loadvm <tag>` monitor commands write the
+# snapshot inline into the qcow2. With src/ pre-pushed and the daemon
+# alive at savevm time, every subsequent `make test-temple WARM=1`
+# reverts to that exact RAM+disk state in ~1-3s instead of re-pushing
+# src/ (~30s).
+#
+# Fast dev loop:
+#   make dev-temple              # cold boot (~90s, once per session)
+#   make vm-warmup               # push src/, save snapshot (~60s, once)
+#   make test-temple WARM=1 T=X  # restore + push tests/ (~10s, every iter)
+#
+# Snapshot tag is hard-coded to 'ready' — single warm slot is enough.
+#
+# Helper: send a QEMU monitor command. Trailing `quit` makes nc exit
+# cleanly; macOS nc has no -q, so use -i 1 to flush before close.
+# Usage: $(call qmp_send,<command>)
+define qmp_send
+printf '%s\nquit\n' '$(1)' | nc -U -i 1 "$(TEMPLE_MON)"
+endef
+
+# vm-warmup — push src/ to the running VM, then snapshot RAM+disk.
+# Assumes `make dev-temple` is up. Errors clearly if the monitor sock
+# is missing.
+vm-warmup:
+	@if [ ! -S "$(TEMPLE_MON)" ]; then \
+	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
+	fi
+	@echo "==> pushing src/ to VM (daemon stays alive, tests skipped)"
+	@python3 scripts/temple-run.py --keep-daemon
+	@echo "==> saving snapshot 'ready' (savevm blocks for a few seconds)..."
+	@$(call qmp_send,savevm ready) >build/qemu-warmup.out 2>&1 || true
+	@echo "==> verifying snapshot via 'info snapshots'"
+	@out=$$($(call qmp_send,info snapshots) 2>/dev/null); \
+	if echo "$$out" | grep -q 'ready'; then \
+	  echo "==> snapshot 'ready' saved"; \
+	else \
+	  echo "error: snapshot 'ready' not found after savevm" >&2; \
+	  echo "--- monitor output ---" >&2; \
+	  echo "$$out" >&2; \
+	  exit 1; \
+	fi
+
+# vm-revert — restore the 'ready' snapshot. Errors clearly if it
+# doesn't exist (i.e. vm-warmup was never run this session).
+vm-revert:
+	@if [ ! -S "$(TEMPLE_MON)" ]; then \
+	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
+	fi
+	@out=$$($(call qmp_send,info snapshots) 2>/dev/null); \
+	if ! echo "$$out" | grep -q 'ready'; then \
+	  echo "error: no 'ready' snapshot — run 'make vm-warmup' first" >&2; exit 1; \
+	fi
+	@echo "==> reverting to snapshot 'ready'"
+	@$(call qmp_send,loadvm ready) >build/qemu-revert.out 2>&1 || true
+
+# vm-snapshots — list snapshots present in the qcow2 (live VM view).
+vm-snapshots:
+	@if [ ! -S "$(TEMPLE_MON)" ]; then \
+	  echo "error: $(TEMPLE_MON) not found — run 'make dev-temple' first" >&2; exit 1; \
+	fi
+	@$(call qmp_send,info snapshots) 2>/dev/null | grep -E '^[0-9]+ +ready|^ID' || \
+	  echo "(no 'ready' snapshot — run 'make vm-warmup')"
